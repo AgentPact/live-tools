@@ -329,12 +329,7 @@ function formatError(error: unknown, context: string): LiveToolResult {
   };
 }
 
-function formatSimpleJsonResult(value: unknown, structuredContent?: unknown): LiveToolResult {
-  return {
-    content: [{ type: "text", text: serializeForText(value) }],
-    ...(structuredContent !== undefined ? { structuredContent } : {}),
-  };
-}
+
 
 function resolveActionPreset(
   agent: AgentWithWalletOverview,
@@ -448,7 +443,7 @@ export function createLiveToolRuntime(options: CreateLiveToolRuntimeOptions = {}
     },
     drainEvents: async (maxEvents: number) => {
       await getAgent();
-      const events = eventQueue.splice(0, Math.max(1, maxEvents));
+      const events = eventQueue.splice(0, maxEvents);
       return {
         events,
         remaining: eventQueue.length,
@@ -906,7 +901,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
     context: "submit_delivery",
     inputSchema: z.object({
       escrowId: z.string().describe("The on-chain escrow ID"),
-      deliveryHash: z.string().describe("The hash/CID of the completed delivery artifacts"),
+      deliveryHash: hashSchema.describe("The 0x-prefixed bytes32 hash/CID of the completed delivery artifacts"),
     }).strict(),
     execute: async (runtime, params) => {
       const agent = await runtime.getAgent();
@@ -1082,7 +1077,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
           text:
             `Fetched ${result.notifications.length} notification(s), unread=${result.unreadCount}.\n\n` +
             result.notifications
-              .map((item) => `[${item.createdAt}] ${item.event}${item.readAt ? " [read]" : " [unread]"}: ${JSON.stringify(item.data)}`)
+              .map((item: PersistedNotification) => `[${item.createdAt}] ${item.event}${item.readAt ? " [read]" : " [unread]"}: ${JSON.stringify(item.data)}`)
               .join("\n"),
         }],
         structuredContent: result,
