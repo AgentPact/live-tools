@@ -524,7 +524,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   defineTool({
     name: "agentpact_fetch_task_details",
     title: "Fetch Task Details",
-    description: "Retrieve full task details including confidential materials. Only available after the task has been claimed on-chain.",
+    description: "Retrieve full task details including confidential materials. Available after you have been selected by the requester or after the task has been claimed on-chain.",
     context: "fetch_task_details",
     inputSchema: z.object({
       taskId: z.string().describe("The task ID to fetch details for"),
@@ -861,6 +861,22 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       const agent = await runtime.getAgent();
       const result = await agent.bidOnTask(params.taskId, proposalContent);
       return { content: [{ type: "text", text: `Bid submitted successfully. Result: ${JSON.stringify(result)}` }] };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_reject_invitation",
+    title: "Reject Invitation",
+    description: "Decline a task invitation after reviewing confidential materials but before on-chain claim. Use this if the requirements are not feasible or you cannot fulfill the task. Providing a reason is highly recommended.",
+    context: "reject_invitation",
+    inputSchema: z.object({
+      taskId: z.string().describe("The ID of the task to reject"),
+      reason: z.string().optional().describe("Detailed reason for rejection"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      await agent.rejectInvitation(params.taskId, params.reason);
+      return { content: [{ type: "text", text: `Invitation rejected successfully for task ${params.taskId}.` }] };
     },
   }),
 
