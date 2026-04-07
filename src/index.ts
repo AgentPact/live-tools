@@ -8,12 +8,12 @@
  * - Discovery (5): get_available_tasks, register_provider, fetch_task_details, get_escrow, get_task_timeline
  * - Wallet (6): get_wallet_overview, get_token_balance, get_token_allowance, get_gas_quote, preflight_check, approve_token
  * - Transaction (2): get_transaction_status, wait_for_transaction
- * - Lifecycle (5): bid_on_task, confirm_task, decline_task, submit_delivery, abandon_task
+ * - Lifecycle (5): bid_on_task, reject_invitation, claim_assigned_task, submit_delivery, abandon_task
  * - Communication (4): send_message, get_messages, report_progress, get_revision_details
  * - Events (2): poll_events, get_notifications
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
- * - Timeout (3): claim_acceptance_timeout, claim_delivery_timeout, claim_confirmation_timeout
+ * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -82,7 +82,7 @@ export type AgentWithWalletOverview = AgentPactAgent & {
   getTokenAllowance(token: `0x${string}`, spender: `0x${string}`): Promise<bigint>;
   approveToken(token: `0x${string}`, spender: `0x${string}`, amount?: bigint): Promise<string>;
   getGasQuote(params: {
-    action: "approve_token" | "confirm_task" | "decline_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout" | "claim_confirmation_timeout";
+    action: "approve_token" | "claim_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout";
     tokenAddress?: `0x${string}`;
     spender?: `0x${string}`;
     amount?: bigint;
@@ -103,7 +103,7 @@ export type AgentWithWalletOverview = AgentPactAgent & {
     estimatedTotalCostEth: string;
   }>;
   preflightCheck(params?: {
-    action?: "approve_token" | "confirm_task" | "decline_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout" | "claim_confirmation_timeout";
+    action?: "approve_token" | "claim_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout";
     tokenAddress?: `0x${string}`;
     spender?: `0x${string}`;
     requiredAmount?: bigint;
@@ -233,8 +233,6 @@ const FORWARDED_EVENTS = [
   "TASK_CREATED",
   "ASSIGNMENT_SIGNATURE",
   "TASK_DETAILS",
-  "TASK_CONFIRMED",
-  "TASK_DECLINED",
   "REVISION_REQUESTED",
   "TASK_ACCEPTED",
   "TASK_DELIVERED",
@@ -254,13 +252,11 @@ const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Expected a 20-byt
 const hashSchema = z.string().regex(/^0x[a-fA-F0-9]{64}$/, "Expected a 32-byte transaction hash");
 const gasQuoteActionSchema = z.enum([
   "approve_token",
-  "confirm_task",
-  "decline_task",
+  "claim_task",
   "submit_delivery",
   "abandon_task",
   "claim_acceptance_timeout",
   "claim_delivery_timeout",
-  "claim_confirmation_timeout",
 ]);
 const preflightPresetSchema = z.enum([
   "approve_usdc_to_escrow",
@@ -334,7 +330,7 @@ function formatError(error: unknown, context: string): LiveToolResult {
 function resolveActionPreset(
   agent: AgentWithWalletOverview,
   params: {
-    action?: "approve_token" | "confirm_task" | "decline_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout" | "claim_confirmation_timeout";
+    action?: "approve_token" | "claim_task" | "submit_delivery" | "abandon_task" | "claim_acceptance_timeout" | "claim_delivery_timeout";
     tokenAddress?: `0x${string}`;
     spender?: `0x${string}`;
   },
@@ -524,7 +520,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   defineTool({
     name: "agentpact_fetch_task_details",
     title: "Fetch Task Details",
-    description: "Retrieve full task details including confidential materials. Available after you have been selected by the requester or after the task has been claimed on-chain.",
+    description: "Retrieve full task details including confidential materials. Available once you have been selected and authorized by the requester, including the pre-claim evaluation stage.",
     context: "fetch_task_details",
     inputSchema: z.object({
       taskId: z.string().describe("The task ID to fetch details for"),
@@ -867,7 +863,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   defineTool({
     name: "agentpact_reject_invitation",
     title: "Reject Invitation",
-    description: "Decline a task invitation after reviewing confidential materials but before on-chain claim. Use this if the requirements are not feasible or you cannot fulfill the task. Providing a reason is highly recommended.",
+    description: "Reject a task invitation after reviewing confidential materials but before on-chain claim. Use this if the hidden scope is not feasible or you cannot fulfill the task. Providing a reason is highly recommended.",
     context: "reject_invitation",
     inputSchema: z.object({
       taskId: z.string().describe("The ID of the task to reject"),
@@ -881,32 +877,17 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
-    name: "agentpact_confirm_task",
-    title: "Confirm Task Execution",
-    description: "Confirm that you will proceed with the task after reviewing confidential materials. This is an on-chain transaction that sets the delivery deadline.",
-    context: "confirm_task",
+    name: "agentpact_claim_assigned_task",
+    title: "Claim Assigned Task",
+    description: "Claim a selected task on-chain after reviewing confidential materials. This enters Working immediately and starts the delivery deadline.",
+    context: "claim_task",
     inputSchema: z.object({
-      escrowId: z.string().describe("The on-chain escrow ID"),
+      taskId: z.string().describe("The platform task ID with an active assignment signature"),
     }).strict(),
     execute: async (runtime, params) => {
       const agent = await runtime.getAgent();
-      const txHash = await agent.confirmTask(BigInt(params.escrowId));
-      return { content: [{ type: "text", text: `Task confirmed on-chain. TX: ${txHash}` }] };
-    },
-  }),
-
-  defineTool({
-    name: "agentpact_decline_task",
-    title: "Decline Task",
-    description: "Decline a task after reviewing confidential materials. The task returns to the pool for another agent. WARNING: 3 consecutive declines = temporary suspension.",
-    context: "decline_task",
-    inputSchema: z.object({
-      escrowId: z.string().describe("The on-chain escrow ID"),
-    }).strict(),
-    execute: async (runtime, params) => {
-      const agent = await runtime.getAgent();
-      const txHash = await agent.declineTask(BigInt(params.escrowId));
-      return { content: [{ type: "text", text: `Task declined on-chain. TX: ${txHash}` }] };
+      const txHash = await agent.claimAssignedTask(params.taskId);
+      return { content: [{ type: "text", text: `Task claimed on-chain and now in Working. TX: ${txHash}` }] };
     },
   }),
 
@@ -1189,7 +1170,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   // ==========================================================================
-  // TIMEOUT TOOLS (3)
+  // TIMEOUT TOOLS (2)
   // ==========================================================================
   defineTool({
     name: "agentpact_claim_acceptance_timeout",
@@ -1218,21 +1199,6 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       const agent = await runtime.getAgent();
       const txHash = await agent.claimDeliveryTimeout(BigInt(params.escrowId));
       return { content: [{ type: "text", text: `Delivery timeout claimed. Funds refunded to requester. TX: ${txHash}` }] };
-    },
-  }),
-
-  defineTool({
-    name: "agentpact_claim_confirmation_timeout",
-    title: "Claim Confirmation Timeout",
-    description: "Trigger confirmation timeout when the provider hasn't confirmed/declined within the 2-hour window. Task returns to Created for re-matching. On-chain — only callable by requester or provider.",
-    context: "claim_confirmation_timeout",
-    inputSchema: z.object({
-      escrowId: z.string().describe("The on-chain escrow ID"),
-    }).strict(),
-    execute: async (runtime, params) => {
-      const agent = await runtime.getAgent();
-      const txHash = await agent.claimConfirmationTimeout(BigInt(params.escrowId));
-      return { content: [{ type: "text", text: `Confirmation timeout claimed. Task re-opened for matching. TX: ${txHash}` }] };
     },
   }),
 ];
