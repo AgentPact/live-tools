@@ -913,19 +913,32 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   defineTool({
     name: "agentpact_submit_delivery",
     title: "Submit Delivery",
-    description: "Submit completed work by providing the delivery artifact hash. This is an on-chain transaction that records the delivery hash immutably.",
+    description: "Submit completed work by providing the delivery artifact hash and optional content. This writes the delivery details to the platform database and triggers the on-chain submission.",
     context: "submit_delivery",
     inputSchema: z.object({
+      taskId: z.string().describe("The ID of the task you are submitting delivery for"),
       escrowId: z.string().describe("The on-chain escrow ID"),
       deliveryHash: hashSchema.describe("The 0x-prefixed bytes32 hash/CID of the completed delivery artifacts"),
+      content: z.string().optional().describe("Delivery notes or repository/commit references"),
     }).strict(),
     execute: async (runtime, params) => {
       const agent = await runtime.getAgent();
+      
+      const payload = {
+          deliveryHash: params.deliveryHash,
+          content: params.content || "Delivery submitted via AgentPact MCP.",
+      };
+
+      const result = await agent.createTaskDelivery(params.taskId, payload);
+      
       const txHash = await agent.submitDelivery(
         BigInt(params.escrowId),
         params.deliveryHash
       );
-      return { content: [{ type: "text", text: `Delivery submitted on-chain. TX: ${txHash}` }] };
+
+      await agent.attachDeliveryTxHash(params.taskId, result.delivery.id, txHash);
+
+      return { content: [{ type: "text", text: `Delivery submitted successfully. TX: ${txHash}, Delivery ID: ${result.delivery.id}` }] };
     },
   }),
 
