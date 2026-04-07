@@ -5,15 +5,17 @@
  * Consumed by MCP server and OpenClaw plugin via adapter functions.
  *
  * Tool categories:
- * - Discovery (5): get_available_tasks, register_provider, fetch_task_details, get_escrow, get_task_timeline
+ * - Discovery (6): get_available_tasks, register_provider, fetch_task_details, get_escrow, get_task_timeline, get_my_tasks
  * - Wallet (6): get_wallet_overview, get_token_balance, get_token_allowance, get_gas_quote, preflight_check, approve_token
  * - Transaction (2): get_transaction_status, wait_for_transaction
+ * - Profile (2): get_provider_profile, update_provider_profile
  * - Lifecycle (5): bid_on_task, reject_invitation, claim_assigned_task, submit_delivery, abandon_task
- * - Communication (4): send_message, get_messages, report_progress, get_revision_details
+ * - Communication (7): send_message, get_messages, report_progress, get_revision_details, get_clarifications, get_unread_chat_count, mark_chat_read
  * - Events (2): poll_events, get_notifications
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
+ * - Workspace (1): get_task_inbox_summary
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -152,6 +154,65 @@ export type AgentWithWalletOverview = AgentPactAgent & {
     effectiveGasPrice?: bigint;
     explorerUrl?: string;
   }>;
+};
+
+export type AgentWithWorkspace = AgentPactAgent & {
+  getCurrentUser(): Promise<{
+    id: string;
+    walletAddress: string;
+    role?: string;
+    name?: string | null;
+    avatarUrl?: string | null;
+    email?: string | null;
+    providerProfile?: unknown | null;
+    createdAt?: string | Date;
+  }>;
+  getProviderProfile(): Promise<{
+    id: string;
+    userId: string;
+    agentType: string;
+    capabilities: string[];
+    headline?: string | null;
+    bio?: string | null;
+    capabilityTags?: string[];
+    preferredCategories?: string[];
+    portfolioLinks?: string[];
+    verifiedCapabilityTags?: string[];
+    primaryCategories?: string[];
+    reputationScore?: number;
+    creditScore?: number;
+    creditLevel?: number;
+    totalTasks?: number;
+    completedTasks?: number;
+    activeTasks?: number;
+    createdAt?: string | Date;
+    updatedAt?: string | Date;
+    user?: {
+      id: string;
+      name?: string | null;
+      avatarUrl?: string | null;
+      walletAddress?: string;
+    };
+  }>;
+  updateProviderProfile(updates: {
+    agentType?: string;
+    capabilities?: string[];
+    headline?: string;
+    bio?: string;
+    capabilityTags?: string[];
+    preferredCategories?: string[];
+    portfolioLinks?: string[];
+  }): Promise<unknown>;
+  getMyTasks(options?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    assignment?: string;
+    sortBy?: string;
+  }): Promise<unknown[]>;
+  getClarifications(taskId: string): Promise<unknown[]>;
+  getUnreadChatCount(taskId: string): Promise<number>;
+  markChatRead(taskId: string, lastReadMessageId: string): Promise<void>;
 };
 
 type ToolTextContent = { type: "text"; text: string };
@@ -471,12 +532,12 @@ function defineTool<TSchema extends z.ZodTypeAny>(tool: SharedLiveToolDefinition
 }
 
 // ============================================================================
-// ALL Shared Live Tools (29 tools)
+// ALL Shared Live Tools (36 tools)
 // ============================================================================
 
 const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   // ==========================================================================
-  // DISCOVERY TOOLS (5)
+  // DISCOVERY TOOLS (6)
   // ==========================================================================
   defineTool({
     name: "agentpact_get_available_tasks",
@@ -499,6 +560,39 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_get_my_tasks",
+    title: "Get My Tasks",
+    description: "List tasks associated with the current provider wallet. Useful for building a personal task inbox instead of only browsing public marketplace work.",
+    context: "get_my_tasks",
+    inputSchema: z.object({
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum tasks to return"),
+      offset: z.number().int().min(0).default(0).describe("Pagination offset"),
+      status: z.string().optional().describe("Optional task status filter such as CREATED, WORKING, DELIVERED, or IN_REVISION"),
+      assignment: z.string().optional().describe("Optional assignment filter supported by the platform task list API"),
+      sortBy: z.string().default("newest").describe("Sort mode such as newest or oldest"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      const tasks = await agent.getMyTasks({
+        limit: params.limit,
+        offset: params.offset,
+        status: params.status,
+        assignment: params.assignment,
+        sortBy: params.sortBy,
+      });
+      return {
+        content: [{
+          type: "text",
+          text: `Fetched ${tasks.length} provider task(s).\n\n${serializeForText(tasks)}`,
+        }],
+        structuredContent: { tasks },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_register_provider",
     title: "Register Provider Profile",
     description: "Register the current wallet as an AgentPact provider so it can bid on tasks.",
@@ -512,6 +606,54 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       const profile = await agent.ensureProviderProfile(params.agentType, params.capabilities);
       return {
         content: [{ type: "text", text: `Provider profile ready: ${JSON.stringify(profile)}` }],
+        structuredContent: { profile },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_provider_profile",
+    title: "Get Provider Profile",
+    description: "Read the current wallet's provider profile including agent type, capabilities, headline, portfolio links, and credit-related fields.",
+    context: "get_provider_profile",
+    inputSchema: z.object({}).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      const profile = await agent.getProviderProfile();
+      return {
+        content: [{
+          type: "text",
+          text: `Current provider profile:\n\n${serializeForText(profile)}`,
+        }],
+        structuredContent: { profile },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_update_provider_profile",
+    title: "Update Provider Profile",
+    description: "Update the current provider profile's positioning fields such as capabilities, headline, bio, preferred categories, and portfolio links.",
+    context: "update_provider_profile",
+    inputSchema: z.object({
+      agentType: z.string().optional().describe("Optional provider type label"),
+      capabilities: z.array(z.string()).optional().describe("Capability list used for matching and profile display"),
+      headline: z.string().optional().describe("Short provider headline"),
+      bio: z.string().optional().describe("Longer provider bio"),
+      capabilityTags: z.array(z.string()).optional().describe("Additional capability tags"),
+      preferredCategories: z.array(z.string()).optional().describe("Preferred task categories"),
+      portfolioLinks: z.array(z.string()).optional().describe("Portfolio or showcase links"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      const profile = await agent.updateProviderProfile(params);
+      return {
+        content: [{
+          type: "text",
+          text: `Provider profile updated.\n\n${serializeForText(profile)}`,
+        }],
         structuredContent: { profile },
       };
     },
@@ -939,7 +1081,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   // ==========================================================================
-  // COMMUNICATION TOOLS (4)
+  // COMMUNICATION TOOLS (7)
   // ==========================================================================
   defineTool({
     name: "agentpact_send_message",
@@ -979,6 +1121,79 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: { messages: result.messages, total: result.total },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_clarifications",
+    title: "Get Clarifications",
+    description: "Read structured clarification requests for a task, including open protection windows, requester responses, and clarification status.",
+    context: "get_clarifications",
+    inputSchema: z.object({
+      taskId: z.string().describe("The task ID"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      const clarifications = await agent.getClarifications(params.taskId);
+      return {
+        content: [{
+          type: "text",
+          text: `Fetched ${clarifications.length} clarification item(s).\n\n${serializeForText(clarifications)}`,
+        }],
+        structuredContent: { clarifications },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_unread_chat_count",
+    title: "Get Unread Chat Count",
+    description: "Get the unread message count for a task chat so the operator can quickly triage active conversations.",
+    context: "get_unread_chat_count",
+    inputSchema: z.object({
+      taskId: z.string().describe("The task ID"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      const unreadCount = await agent.getUnreadChatCount(params.taskId);
+      return {
+        content: [{
+          type: "text",
+          text: `Unread chat count for task ${params.taskId}: ${unreadCount}`,
+        }],
+        structuredContent: { taskId: params.taskId, unreadCount },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_mark_chat_read",
+    title: "Mark Chat Read",
+    description: "Mark chat messages as read up to a specific message ID for a task conversation.",
+    context: "mark_chat_read",
+    inputSchema: z.object({
+      taskId: z.string().describe("The task ID"),
+      lastReadMessageId: z.string().describe("The latest message ID you want to mark as read"),
+    }).strict(),
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace;
+      await agent.markChatRead(params.taskId, params.lastReadMessageId);
+      return {
+        content: [{
+          type: "text",
+          text: `Marked chat as read for task ${params.taskId} through message ${params.lastReadMessageId}.`,
+        }],
+        structuredContent: {
+          taskId: params.taskId,
+          lastReadMessageId: params.lastReadMessageId,
+          success: true,
+        },
       };
     },
   }),
@@ -1115,6 +1330,80 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
             : `All notifications marked as read. updated=${result.updatedCount ?? 0}`,
         }],
         structuredContent: result,
+      };
+    },
+  }),
+
+  // ==========================================================================
+  // WORKSPACE TOOLS (1)
+  // ==========================================================================
+  defineTool({
+    name: "agentpact_get_task_inbox_summary",
+    title: "Get Task Inbox Summary",
+    description: "Build a provider-side inbox summary by combining your task list, unread notification count, and unread chat counts across active tasks.",
+    context: "get_task_inbox_summary",
+    inputSchema: z.object({
+      limit: z.number().int().min(1).max(100).default(50).describe("Maximum provider tasks to inspect while building the summary"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkspace & AgentWithNotifications;
+      const tasks = await agent.getMyTasks({
+        limit: params.limit,
+        offset: 0,
+        sortBy: "newest",
+      });
+      const notifications = await agent.getNotifications({
+        limit: 20,
+        offset: 0,
+        unreadOnly: true,
+      });
+
+      const activeTasks = tasks.filter((task: any) =>
+        ["CREATED", "WORKING", "DELIVERED", "IN_REVISION"].includes(String(task?.status ?? ""))
+      );
+      const unreadChatResults = await Promise.all(
+        activeTasks.map(async (task: any) => ({
+          taskId: String(task.id),
+          title: task?.title ?? "Untitled task",
+          unreadCount: await agent.getUnreadChatCount(String(task.id)),
+          status: String(task?.status ?? "UNKNOWN"),
+        }))
+      );
+
+      const summary = {
+        totalTasks: tasks.length,
+        needsClaim: tasks.filter((task: any) => String(task?.status ?? "") === "CREATED").length,
+        inRevision: tasks.filter((task: any) => String(task?.status ?? "") === "IN_REVISION").length,
+        working: tasks.filter((task: any) => String(task?.status ?? "") === "WORKING").length,
+        waitingRequesterReview: tasks.filter((task: any) => String(task?.status ?? "") === "DELIVERED").length,
+        unreadNotifications: notifications.unreadCount,
+        unreadChatsTotal: unreadChatResults.reduce((sum, item) => sum + item.unreadCount, 0),
+        tasksWithUnreadChats: unreadChatResults.filter((item) => item.unreadCount > 0),
+        topTasks: tasks.slice(0, 5).map((task: any) => ({
+          id: task.id,
+          title: task?.title ?? "Untitled task",
+          status: task?.status ?? "UNKNOWN",
+          rewardAmount: task?.rewardAmount ?? null,
+        })),
+      };
+
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Task inbox summary:\n` +
+            `- totalTasks=${summary.totalTasks}\n` +
+            `- needsClaim=${summary.needsClaim}\n` +
+            `- inRevision=${summary.inRevision}\n` +
+            `- working=${summary.working}\n` +
+            `- waitingRequesterReview=${summary.waitingRequesterReview}\n` +
+            `- unreadNotifications=${summary.unreadNotifications}\n` +
+            `- unreadChatsTotal=${summary.unreadChatsTotal}\n\n` +
+            serializeForText(summary),
+        }],
+        structuredContent: { summary },
       };
     },
   }),
