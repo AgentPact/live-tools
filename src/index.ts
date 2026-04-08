@@ -257,6 +257,41 @@ export interface SharedLiveToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTy
   execute(runtime: LiveToolRuntime, params: z.infer<TSchema>): Promise<LiveToolResult>;
 }
 
+export type SharedLiveToolCategory =
+  | "discovery"
+  | "wallet"
+  | "transaction"
+  | "profile"
+  | "lifecycle"
+  | "communication"
+  | "events"
+  | "social"
+  | "timeout"
+  | "workspace";
+
+export type SharedLiveToolRiskLevel = "low" | "medium" | "high";
+
+export interface SharedLiveToolCatalogEntry {
+  name: string;
+  title: string;
+  description: string;
+  category: SharedLiveToolCategory;
+  riskLevel: SharedLiveToolRiskLevel;
+  readOnlyHint: boolean;
+  idempotentHint: boolean;
+}
+
+export interface SharedLiveToolCatalogGroups {
+  byCategory: Record<SharedLiveToolCategory, string[]>;
+  recommendedFirstStepTools: string[];
+  dailyTools: string[];
+  transactionSensitiveTools: string[];
+  profileMaintenanceTools: string[];
+  highRiskTools: string[];
+  readOnlyTools: string[];
+  commonFlows: Record<string, string[]>;
+}
+
 export interface McpServerLike {
   registerTool(
     name: string,
@@ -1492,12 +1527,209 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 ];
 
+const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
+  agentpact_get_available_tasks: "discovery",
+  agentpact_get_my_tasks: "discovery",
+  agentpact_register_provider: "discovery",
+  agentpact_get_provider_profile: "profile",
+  agentpact_update_provider_profile: "profile",
+  agentpact_fetch_task_details: "discovery",
+  agentpact_get_escrow: "discovery",
+  agentpact_get_task_timeline: "discovery",
+  agentpact_get_wallet_overview: "wallet",
+  agentpact_get_token_balance: "wallet",
+  agentpact_get_token_allowance: "wallet",
+  agentpact_get_gas_quote: "wallet",
+  agentpact_preflight_check: "wallet",
+  agentpact_approve_token: "wallet",
+  agentpact_get_transaction_status: "transaction",
+  agentpact_wait_for_transaction: "transaction",
+  agentpact_bid_on_task: "lifecycle",
+  agentpact_reject_invitation: "lifecycle",
+  agentpact_claim_assigned_task: "lifecycle",
+  agentpact_submit_delivery: "lifecycle",
+  agentpact_abandon_task: "lifecycle",
+  agentpact_send_message: "communication",
+  agentpact_get_messages: "communication",
+  agentpact_get_clarifications: "communication",
+  agentpact_get_unread_chat_count: "communication",
+  agentpact_mark_chat_read: "communication",
+  agentpact_report_progress: "communication",
+  agentpact_get_revision_details: "communication",
+  agentpact_poll_events: "events",
+  agentpact_get_notifications: "events",
+  agentpact_mark_notifications_read: "events",
+  agentpact_publish_showcase: "social",
+  agentpact_get_tip_status: "social",
+  agentpact_claim_acceptance_timeout: "timeout",
+  agentpact_claim_delivery_timeout: "timeout",
+  agentpact_get_task_inbox_summary: "workspace",
+};
+
+const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
+  agentpact_get_available_tasks: "low",
+  agentpact_get_my_tasks: "low",
+  agentpact_register_provider: "medium",
+  agentpact_get_provider_profile: "low",
+  agentpact_update_provider_profile: "medium",
+  agentpact_fetch_task_details: "low",
+  agentpact_get_escrow: "low",
+  agentpact_get_task_timeline: "low",
+  agentpact_get_wallet_overview: "low",
+  agentpact_get_token_balance: "low",
+  agentpact_get_token_allowance: "low",
+  agentpact_get_gas_quote: "low",
+  agentpact_preflight_check: "low",
+  agentpact_approve_token: "high",
+  agentpact_get_transaction_status: "low",
+  agentpact_wait_for_transaction: "low",
+  agentpact_bid_on_task: "medium",
+  agentpact_reject_invitation: "medium",
+  agentpact_claim_assigned_task: "high",
+  agentpact_submit_delivery: "high",
+  agentpact_abandon_task: "high",
+  agentpact_send_message: "medium",
+  agentpact_get_messages: "low",
+  agentpact_get_clarifications: "low",
+  agentpact_get_unread_chat_count: "low",
+  agentpact_mark_chat_read: "low",
+  agentpact_report_progress: "medium",
+  agentpact_get_revision_details: "low",
+  agentpact_poll_events: "low",
+  agentpact_get_notifications: "low",
+  agentpact_mark_notifications_read: "low",
+  agentpact_publish_showcase: "medium",
+  agentpact_get_tip_status: "low",
+  agentpact_claim_acceptance_timeout: "high",
+  agentpact_claim_delivery_timeout: "high",
+  agentpact_get_task_inbox_summary: "low",
+};
+
+const recommendedFirstStepTools = [
+  "agentpact_get_task_inbox_summary",
+  "agentpact_get_my_tasks",
+  "agentpact_get_available_tasks",
+  "agentpact_fetch_task_details",
+  "agentpact_preflight_check",
+] as const;
+
+const dailyTools = [
+  "agentpact_get_task_inbox_summary",
+  "agentpact_get_my_tasks",
+  "agentpact_fetch_task_details",
+  "agentpact_get_messages",
+  "agentpact_get_clarifications",
+  "agentpact_get_unread_chat_count",
+  "agentpact_mark_chat_read",
+  "agentpact_report_progress",
+  "agentpact_get_revision_details",
+  "agentpact_get_notifications",
+  "agentpact_mark_notifications_read",
+] as const;
+
+const transactionSensitiveTools = [
+  "agentpact_preflight_check",
+  "agentpact_get_gas_quote",
+  "agentpact_approve_token",
+  "agentpact_claim_assigned_task",
+  "agentpact_submit_delivery",
+  "agentpact_abandon_task",
+  "agentpact_claim_acceptance_timeout",
+  "agentpact_claim_delivery_timeout",
+  "agentpact_wait_for_transaction",
+] as const;
+
+const profileMaintenanceTools = [
+  "agentpact_get_provider_profile",
+  "agentpact_update_provider_profile",
+  "agentpact_register_provider",
+] as const;
+
+const commonFlows: Record<string, string[]> = {
+  inboxTriage: [
+    "agentpact_get_task_inbox_summary",
+    "agentpact_get_my_tasks",
+    "agentpact_fetch_task_details",
+  ],
+  selectedTaskDecision: [
+    "agentpact_fetch_task_details",
+    "agentpact_get_clarifications",
+    "agentpact_claim_assigned_task",
+    "agentpact_reject_invitation",
+  ],
+  activeTaskCommunication: [
+    "agentpact_get_unread_chat_count",
+    "agentpact_get_clarifications",
+    "agentpact_get_messages",
+    "agentpact_mark_chat_read",
+    "agentpact_report_progress",
+  ],
+  deliveryPreflight: [
+    "agentpact_preflight_check",
+    "agentpact_get_revision_details",
+    "agentpact_submit_delivery",
+  ],
+  timeoutAction: [
+    "agentpact_get_task_timeline",
+    "agentpact_preflight_check",
+    "agentpact_claim_acceptance_timeout",
+    "agentpact_claim_delivery_timeout",
+  ],
+};
+
 // ============================================================================
 // Public API
 // ============================================================================
 
 export function getSharedLiveToolDefinitions(): SharedLiveToolDefinition[] {
   return sharedLiveTools;
+}
+
+export function getSharedLiveToolNames(): string[] {
+  return sharedLiveTools.map((tool) => tool.name);
+}
+
+export function getSharedLiveToolCatalog(): SharedLiveToolCatalogEntry[] {
+  return sharedLiveTools.map((tool) => ({
+    name: tool.name,
+    title: tool.title,
+    description: tool.description,
+    category: toolCategoryMap[tool.name] ?? "discovery",
+    riskLevel: toolRiskLevelMap[tool.name] ?? "medium",
+    readOnlyHint: tool.readOnlyHint ?? false,
+    idempotentHint: tool.idempotentHint ?? false,
+  }));
+}
+
+export function getSharedLiveToolCatalogGroups(): SharedLiveToolCatalogGroups {
+  const catalog = getSharedLiveToolCatalog();
+  const byCategory = {
+    discovery: [] as string[],
+    wallet: [] as string[],
+    transaction: [] as string[],
+    profile: [] as string[],
+    lifecycle: [] as string[],
+    communication: [] as string[],
+    events: [] as string[],
+    social: [] as string[],
+    timeout: [] as string[],
+    workspace: [] as string[],
+  };
+
+  for (const item of catalog) {
+    byCategory[item.category].push(item.name);
+  }
+
+  return {
+    byCategory,
+    recommendedFirstStepTools: [...recommendedFirstStepTools],
+    dailyTools: [...dailyTools],
+    transactionSensitiveTools: [...transactionSensitiveTools],
+    profileMaintenanceTools: [...profileMaintenanceTools],
+    highRiskTools: catalog.filter((item) => item.riskLevel === "high").map((item) => item.name),
+    readOnlyTools: catalog.filter((item) => item.readOnlyHint).map((item) => item.name),
+    commonFlows,
+  };
 }
 
 export function registerMcpLiveTools(server: McpServerLike, runtime: LiveToolRuntime) {
