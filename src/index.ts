@@ -15,9 +15,10 @@
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
- * - Workspace (14): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
- *   get_worker_runs, create_worker_run, update_worker_run, execute_worker_run_action,
- *   get_approval_requests, request_node_approval, resolve_node_approval, get_node_ops_overview, execute_task_action
+ * - Workspace (17): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
+ *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, finish_task_session,
+ *   execute_worker_run_action, get_approval_requests, request_node_approval, resolve_node_approval, get_node_ops_overview,
+ *   execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -217,6 +218,75 @@ export type AgentWithWorkspace = AgentPactAgent & {
   markChatRead(taskId: string, lastReadMessageId: string): Promise<void>;
 };
 
+export type AgentWithWorkerSessions = AgentPactAgent & {
+  startWorkerTaskSession(input: {
+    taskId: string;
+    hostKind: "OPENCLAW" | "CODEX" | "MCP" | "CUSTOM";
+    workerKey: string;
+    displayName?: string;
+    model?: string;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+    ensureNode?: {
+      displayName?: string;
+      slug?: string;
+      description?: string;
+      automationMode?: "MANUAL" | "ASSISTED" | "AUTO";
+      headline?: string;
+      capabilityTags?: string[];
+      policy?: Record<string, unknown>;
+      agentType?: string;
+      capabilities?: string[];
+      preferredCategories?: string[];
+      portfolioLinks?: string[];
+    };
+  }): Promise<{
+    node: unknown;
+    run: {
+      id: string;
+      [key: string]: unknown;
+    };
+    task: {
+      access?: {
+        assignmentRole?: string;
+      } | null;
+      [key: string]: unknown;
+    };
+    brief: {
+      unreadChatCount?: number;
+      pendingApprovals?: unknown[];
+      clarifications?: unknown[];
+      workerRuns?: unknown[];
+      suggestedNextActions?: string[];
+      [key: string]: unknown;
+    };
+  }>;
+  getWorkerTaskExecutionBrief(input: {
+    taskId: string;
+    messagesLimit?: number;
+    workerRunsLimit?: number;
+    approvalsLimit?: number;
+  }): Promise<{
+    unreadChatCount?: number;
+    pendingApprovals?: unknown[];
+    clarifications?: unknown[];
+    workerRuns?: unknown[];
+    suggestedNextActions?: string[];
+    [key: string]: unknown;
+  }>;
+  finishWorkerTaskSession(input: {
+    runId: string;
+    taskId?: string;
+    outcome: "SUCCEEDED" | "FAILED" | "CANCELLED";
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+    unwatchTask?: boolean;
+  }): Promise<unknown>;
+};
+
 type ToolTextContent = { type: "text"; text: string };
 
 export type LiveToolResult = {
@@ -390,6 +460,7 @@ const approvalRequestStatusSchema = z.enum([
 ]);
 const nodeActionSchema = z.enum(["PAUSE_NODE", "RESUME_NODE", "SET_AUTOMATION_MODE"]);
 const workerRunActionSchema = z.enum(["CANCEL", "MARK_FAILED", "RETRY"]);
+const workerSessionOutcomeSchema = z.enum(["SUCCEEDED", "FAILED", "CANCELLED"]);
 const taskActionSchema = z.enum(["NUDGE_REQUESTER", "MARK_MANUAL_REVIEW", "ADD_NOTE"]);
 const jsonRecordSchema = z.record(z.string(), z.unknown());
 
@@ -1491,8 +1562,8 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
         working: tasks.filter((task: any) => String(task?.status ?? "") === "WORKING").length,
         waitingRequesterReview: tasks.filter((task: any) => String(task?.status ?? "") === "DELIVERED").length,
         unreadNotifications: notifications.unreadCount,
-        unreadChatsTotal: unreadChatResults.reduce((sum, item) => sum + item.unreadCount, 0),
-        tasksWithUnreadChats: unreadChatResults.filter((item) => item.unreadCount > 0),
+        unreadChatsTotal: unreadChatResults.reduce((sum: number, item: { unreadCount: number }) => sum + item.unreadCount, 0),
+        tasksWithUnreadChats: unreadChatResults.filter((item: { unreadCount: number }) => item.unreadCount > 0),
         topTasks: tasks.slice(0, 5).map((task: any) => ({
           id: task.id,
           title: task?.title ?? "Untitled task",
@@ -1677,6 +1748,88 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_begin_task_session",
+    title: "Begin Task Session",
+    description: "Bootstrap a real worker execution session by ensuring the node exists, loading task details, subscribing to task events, creating a RUNNING worker run, and returning a compact execution brief.",
+    context: "begin_task_session",
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe("Task ID to execute"),
+      hostKind: workerHostKindSchema.describe("Worker host kind such as OPENCLAW, CODEX, MCP, or CUSTOM"),
+      workerKey: z.string().min(1).describe("Stable host-local worker identifier"),
+      displayName: z.string().optional().describe("Human-readable worker label"),
+      model: z.string().optional().describe("Optional model identifier"),
+      currentStep: z.string().optional().describe("Initial current step"),
+      summary: z.string().optional().describe("Initial run summary"),
+      metadata: jsonRecordSchema.optional().describe("Structured metadata such as repo, branch, or run URL"),
+      ensureNode: z.object({
+        displayName: z.string().min(1).optional(),
+        slug: z.string().min(2).optional(),
+        description: z.string().optional(),
+        automationMode: nodeAutomationModeSchema.optional(),
+        headline: z.string().optional(),
+        capabilityTags: z.array(z.string()).optional(),
+        policy: jsonRecordSchema.optional(),
+        agentType: z.string().optional(),
+        capabilities: z.array(z.string()).optional(),
+        preferredCategories: z.array(z.string()).optional(),
+        portfolioLinks: z.array(z.string()).optional(),
+      }).strict().optional().describe("Optional node bootstrap data used only when the owner does not already have a node"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const session = await agent.startWorkerTaskSession(params);
+      const serialized = runtime.serialize(session);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Task session started for ${params.taskId}.\n` +
+            `runId=${session.run.id}\n` +
+            `nodeId=${session.node.id}\n` +
+            `assignmentRole=${session.task.access?.assignmentRole ?? "unknown"}\n` +
+            `unreadChat=${session.brief.unreadChatCount ?? 0}\n` +
+            `pendingApprovals=${session.brief.pendingApprovals?.length ?? 0}\n` +
+            `openClarifications=${session.brief.clarifications?.length ?? 0}\n\n` +
+            serialized,
+        }],
+        structuredContent: { session: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_task_execution_brief",
+    title: "Get Task Execution Brief",
+    description: "Retrieve a compact worker-facing execution brief for a task, including task details, worker runs, pending approvals, clarifications, recent messages, and suggested next actions.",
+    context: "get_task_execution_brief",
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe("Task ID to inspect"),
+      messagesLimit: z.number().int().min(1).max(100).default(20).describe("Recent chat messages to include"),
+      workerRunsLimit: z.number().int().min(1).max(50).default(10).describe("Worker runs to include for this task"),
+      approvalsLimit: z.number().int().min(1).max(50).default(20).describe("Pending approvals to include for this task"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const brief = await agent.getWorkerTaskExecutionBrief(params);
+      const serialized = runtime.serialize(brief);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Execution brief ready for ${params.taskId}.\n` +
+            `unreadChat=${brief.unreadChatCount ?? 0}\n` +
+            `pendingApprovals=${brief.pendingApprovals?.length ?? 0}\n` +
+            `workerRuns=${brief.workerRuns?.length ?? 0}\n\n` +
+            serialized,
+        }],
+        structuredContent: { brief: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_update_worker_run",
     title: "Update Worker Run",
     description: "Update worker progress, status, step, summary, or metadata for a previously created worker run.",
@@ -1696,6 +1849,35 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       const serialized = runtime.serialize(run);
       return {
         content: [{ type: "text", text: serialized }],
+        structuredContent: { run: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_finish_task_session",
+    title: "Finish Task Session",
+    description: "Complete a worker execution session by marking the worker run succeeded, failed, or cancelled, and optionally unwatching the task.",
+    context: "finish_task_session",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().optional().describe("Optional task ID to stop watching after completion"),
+      outcome: workerSessionOutcomeSchema.describe("SUCCEEDED, FAILED, or CANCELLED"),
+      percent: z.number().min(0).max(100).optional().describe("Optional final progress percentage"),
+      currentStep: z.string().optional().describe("Optional final current step"),
+      summary: z.string().optional().describe("Optional final summary"),
+      metadata: jsonRecordSchema.optional().describe("Optional final metadata payload"),
+      unwatchTask: z.boolean().optional().describe("Defaults to true when taskId is provided"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const run = await agent.finishWorkerTaskSession(params);
+      const serialized = runtime.serialize(run);
+      return {
+        content: [{
+          type: "text",
+          text: `Task session finished. runId=${run.id} outcome=${params.outcome}\n\n${serialized}`,
+        }],
         structuredContent: { run: JSON.parse(serialized) },
       };
     },
@@ -1962,7 +2144,10 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_execute_node_action: "workspace",
   agentpact_get_worker_runs: "workspace",
   agentpact_create_worker_run: "workspace",
+  agentpact_begin_task_session: "workspace",
+  agentpact_get_task_execution_brief: "workspace",
   agentpact_update_worker_run: "workspace",
+  agentpact_finish_task_session: "workspace",
   agentpact_execute_worker_run_action: "workspace",
   agentpact_get_approval_requests: "workspace",
   agentpact_request_node_approval: "workspace",
@@ -2014,7 +2199,10 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_execute_node_action: "medium",
   agentpact_get_worker_runs: "low",
   agentpact_create_worker_run: "medium",
+  agentpact_begin_task_session: "medium",
+  agentpact_get_task_execution_brief: "low",
   agentpact_update_worker_run: "medium",
+  agentpact_finish_task_session: "medium",
   agentpact_execute_worker_run_action: "high",
   agentpact_get_approval_requests: "low",
   agentpact_request_node_approval: "medium",
@@ -2034,6 +2222,8 @@ const recommendedFirstStepTools = [
 
 const dailyTools = [
   "agentpact_get_my_node",
+  "agentpact_begin_task_session",
+  "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
   "agentpact_get_approval_requests",
   "agentpact_get_node_ops_overview",
@@ -2106,8 +2296,11 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_get_node_ops_overview",
   ],
   workerExecution: [
+    "agentpact_begin_task_session",
+    "agentpact_get_task_execution_brief",
     "agentpact_create_worker_run",
     "agentpact_update_worker_run",
+    "agentpact_finish_task_session",
     "agentpact_execute_worker_run_action",
     "agentpact_get_worker_runs",
   ],

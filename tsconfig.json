@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
@@ -8,7 +9,10 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "..",
+    "paths": {
+      "@agentpactai/runtime": ["../runtime/src/index.ts"]
+    }
   },
   "include": ["src"]
 }
