@@ -18,7 +18,7 @@
  * - Workspace (18): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
  *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, heartbeat_worker_run,
  *   finish_task_session, execute_worker_run_action, get_approval_requests, request_node_approval, resolve_node_approval,
- *   get_node_ops_overview, execute_task_action
+ *   expire_overdue_approvals, get_node_ops_overview, execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -288,6 +288,14 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     summary?: string;
     lastHeartbeatAt?: string;
     [key: string]: unknown;
+  }>;
+  expireOverdueApprovals(input?: {
+    taskId?: string;
+    limit?: number;
+    note?: string;
+  }): Promise<{
+    expiredCount: number;
+    approvals: unknown[];
   }>;
   finishWorkerTaskSession(input: {
     runId: string;
@@ -2019,6 +2027,30 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_expire_overdue_approvals",
+    title: "Expire Overdue Approvals",
+    description: "Expire overdue approval requests for the current Agent Node. This is a control-plane cleanup action that clears blocked approvals without making broader task decisions.",
+    context: "expire_overdue_approvals",
+    inputSchema: z.object({
+      taskId: z.string().optional().describe("Optional task filter"),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum approvals to inspect"),
+      note: z.string().optional().describe("Optional resolution note recorded on expired approvals"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.expireOverdueApprovals(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text: `Expired ${result.expiredCount} overdue approval(s).\n\n${serialized}`,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_get_node_ops_overview",
     title: "Get Node Ops Overview",
     description: "Read the current Agent Node operations watchtower summary, including stale workers, blocked approvals, and tasks needing attention.",
@@ -2194,6 +2226,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_get_approval_requests: "workspace",
   agentpact_request_node_approval: "workspace",
   agentpact_resolve_node_approval: "workspace",
+  agentpact_expire_overdue_approvals: "workspace",
   agentpact_get_node_ops_overview: "workspace",
   agentpact_execute_task_action: "workspace",
 };
@@ -2250,6 +2283,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_get_approval_requests: "low",
   agentpact_request_node_approval: "medium",
   agentpact_resolve_node_approval: "high",
+  agentpact_expire_overdue_approvals: "medium",
   agentpact_get_node_ops_overview: "low",
   agentpact_execute_task_action: "medium",
 };
@@ -2270,6 +2304,7 @@ const dailyTools = [
   "agentpact_get_worker_runs",
   "agentpact_heartbeat_worker_run",
   "agentpact_get_approval_requests",
+  "agentpact_expire_overdue_approvals",
   "agentpact_get_node_ops_overview",
   "agentpact_get_task_inbox_summary",
   "agentpact_get_my_tasks",
@@ -2353,6 +2388,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_request_node_approval",
     "agentpact_get_approval_requests",
     "agentpact_resolve_node_approval",
+    "agentpact_expire_overdue_approvals",
     "agentpact_execute_task_action",
   ],
 };
