@@ -440,6 +440,20 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
       [key: string]: unknown;
     };
   }>;
+  waitForRequesterReviewOutcome(input: {
+    taskId: string;
+    timeoutMs?: number;
+    autoWatchTask?: boolean;
+  }): Promise<{
+    timedOut: boolean;
+    matchedEvent: "TASK_ACCEPTED" | "REVISION_REQUESTED" | "TASK_SETTLED" | null;
+    task: {
+      id?: string;
+      [key: string]: unknown;
+    };
+    revisionDetails?: unknown;
+    event?: Record<string, unknown>;
+  }>;
 };
 
 type ToolTextContent = { type: "text"; text: string };
@@ -2227,6 +2241,34 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_wait_for_requester_review_outcome",
+    title: "Wait For Requester Review Outcome",
+    description: "Wait for the requester to accept, request revision, or settle the task after delivery review begins. When a revision is requested, structured revision details are included automatically.",
+    context: "wait_for_requester_review_outcome",
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe("Task ID to watch"),
+      timeoutMs: z.number().int().min(1000).max(86400000).optional().describe("Optional wait timeout in milliseconds"),
+      autoWatchTask: z.boolean().optional().describe("Defaults to true to ensure the task is being watched while waiting"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.waitForRequesterReviewOutcome(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            (result.timedOut
+              ? `Requester review outcome did not arrive before timeout for ${params.taskId}.\n\n`
+              : `Requester review outcome received for ${params.taskId}: ${result.matchedEvent ?? "unknown"}.\n\n`) +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_resume_worker_run_after_approval",
     title: "Resume Worker Run After Approval",
     description: "Reload an approval, require it to be APPROVED, and move the worker run back to RUNNING. Use this after the owner approves the blocked step.",
@@ -2578,6 +2620,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_finish_task_session: "workspace",
   agentpact_gate_worker_run_for_approval: "workspace",
   agentpact_wait_for_approval_resolution: "workspace",
+  agentpact_wait_for_requester_review_outcome: "workspace",
   agentpact_resume_worker_run_after_approval: "workspace",
   agentpact_execute_worker_run_action: "workspace",
   agentpact_resolve_stale_worker_runs: "workspace",
@@ -2641,6 +2684,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_finish_task_session: "medium",
   agentpact_gate_worker_run_for_approval: "high",
   agentpact_wait_for_approval_resolution: "low",
+  agentpact_wait_for_requester_review_outcome: "low",
   agentpact_resume_worker_run_after_approval: "medium",
   agentpact_execute_worker_run_action: "high",
   agentpact_resolve_stale_worker_runs: "high",
@@ -2684,6 +2728,7 @@ const dailyTools = [
   "agentpact_get_notifications",
   "agentpact_wait_for_node_event",
   "agentpact_wait_for_approval_resolution",
+  "agentpact_wait_for_requester_review_outcome",
   "agentpact_mark_notifications_read",
 ] as const;
 
@@ -2752,6 +2797,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_heartbeat_worker_run",
     "agentpact_finish_task_session",
     "agentpact_gate_worker_run_for_approval",
+    "agentpact_wait_for_requester_review_outcome",
     "agentpact_resume_worker_run_after_approval",
     "agentpact_execute_worker_run_action",
     "agentpact_resolve_stale_worker_runs",
@@ -2763,6 +2809,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_get_approval_requests",
     "agentpact_wait_for_node_event",
     "agentpact_wait_for_approval_resolution",
+    "agentpact_wait_for_requester_review_outcome",
     "agentpact_resolve_node_approval",
     "agentpact_resume_worker_run_after_approval",
     "agentpact_expire_overdue_approvals",
