@@ -334,6 +334,27 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
       [key: string]: unknown;
     };
   }>;
+  claimTaskForWorkerRun(input: {
+    runId: string;
+    taskId: string;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    txHash: string;
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+    task: {
+      id?: string;
+      [key: string]: unknown;
+    };
+  }>;
   getWorkerTaskExecutionBrief(input: {
     taskId: string;
     messagesLimit?: number;
@@ -404,6 +425,33 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     metadata?: Record<string, unknown>;
     unwatchTask?: boolean;
   }): Promise<unknown>;
+  submitDeliveryForWorkerRun(input: {
+    runId: string;
+    taskId: string;
+    escrowId: bigint;
+    deliveryHash: string;
+    content?: string;
+    artifacts?: unknown;
+    selfTestResults?: unknown;
+    revisionChanges?: unknown;
+    aiValidationResult?: string;
+    isPass?: boolean;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    txHash: string;
+    deliveryId: string;
+    delivery: unknown;
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+  }>;
   gateWorkerRunForApproval(input: {
     runId: string;
     taskId: string;
@@ -2145,6 +2193,38 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_claim_task_for_worker_run",
+    title: "Claim Task For Worker Run",
+    description: "Claim the assigned task on-chain and immediately sync the worker run back to RUNNING with an execution-ready status. Use this when the worker session has reviewed assignment details and is ready to start protected work.",
+    context: "claim_task_for_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().min(1).describe("Task ID with an active assignment signature"),
+      percent: z.number().min(0).max(100).optional().describe("Optional worker progress to record after claim"),
+      currentStep: z.string().optional().describe("Optional worker current step after claim"),
+      summary: z.string().optional().describe("Optional worker summary after claim"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the worker run"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.claimTaskForWorkerRun(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Task claimed for worker run.\n` +
+            `taskId=${params.taskId}\n` +
+            `runId=${result.run.id}\n` +
+            `txHash=${result.txHash}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_get_task_execution_brief",
     title: "Get Task Execution Brief",
     description: "Retrieve a compact worker-facing execution brief for a task, including task details, worker runs, pending approvals, clarifications, recent messages, and suggested next actions.",
@@ -2172,6 +2252,50 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
             serialized,
         }],
         structuredContent: { brief: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_submit_delivery_for_worker_run",
+    title: "Submit Delivery For Worker Run",
+    description: "Create the platform delivery record, submit the on-chain delivery transaction, attach the tx hash, and sync the worker run into requester-review waiting state.",
+    context: "submit_delivery_for_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().min(1).describe("Task ID"),
+      escrowId: z.string().min(1).describe("On-chain escrow ID"),
+      deliveryHash: hashSchema.describe("0x-prefixed delivery artifact hash"),
+      content: z.string().optional().describe("Delivery notes or repository references"),
+      artifacts: z.unknown().optional().describe("Optional structured artifacts payload"),
+      selfTestResults: z.unknown().optional().describe("Optional self-test output"),
+      revisionChanges: z.unknown().optional().describe("Optional revision delta payload"),
+      aiValidationResult: z.string().optional().describe("Optional AI validation summary"),
+      isPass: z.boolean().optional().describe("Optional delivery self-evaluation flag"),
+      percent: z.number().min(0).max(100).optional().describe("Optional worker progress to record after submission"),
+      currentStep: z.string().optional().describe("Optional worker current step after submission"),
+      summary: z.string().optional().describe("Optional worker summary after submission"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the worker run"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.submitDeliveryForWorkerRun({
+        ...params,
+        escrowId: BigInt(params.escrowId),
+      });
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Delivery submitted for worker run.\n` +
+            `taskId=${params.taskId}\n` +
+            `runId=${result.run.id}\n` +
+            `deliveryId=${result.deliveryId}\n` +
+            `txHash=${result.txHash}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
       };
     },
   }),
@@ -2730,10 +2854,12 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_create_worker_run: "workspace",
   agentpact_begin_task_session: "workspace",
   agentpact_resume_task_session: "workspace",
+  agentpact_claim_task_for_worker_run: "workspace",
   agentpact_get_task_execution_brief: "workspace",
   agentpact_update_worker_run: "workspace",
   agentpact_heartbeat_worker_run: "workspace",
   agentpact_finish_task_session: "workspace",
+  agentpact_submit_delivery_for_worker_run: "workspace",
   agentpact_gate_worker_run_for_approval: "workspace",
   agentpact_wait_for_approval_resolution: "workspace",
   agentpact_wait_for_requester_review_outcome: "workspace",
@@ -2796,10 +2922,12 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_create_worker_run: "medium",
   agentpact_begin_task_session: "medium",
   agentpact_resume_task_session: "medium",
+  agentpact_claim_task_for_worker_run: "high",
   agentpact_get_task_execution_brief: "low",
   agentpact_update_worker_run: "medium",
   agentpact_heartbeat_worker_run: "low",
   agentpact_finish_task_session: "medium",
+  agentpact_submit_delivery_for_worker_run: "high",
   agentpact_gate_worker_run_for_approval: "high",
   agentpact_wait_for_approval_resolution: "low",
   agentpact_wait_for_requester_review_outcome: "low",
@@ -2829,6 +2957,7 @@ const dailyTools = [
   "agentpact_get_my_node",
   "agentpact_begin_task_session",
   "agentpact_resume_task_session",
+  "agentpact_claim_task_for_worker_run",
   "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
   "agentpact_heartbeat_worker_run",
@@ -2913,10 +3042,12 @@ const commonFlows: Record<string, string[]> = {
   workerExecution: [
     "agentpact_begin_task_session",
     "agentpact_resume_task_session",
+    "agentpact_claim_task_for_worker_run",
     "agentpact_get_task_execution_brief",
     "agentpact_create_worker_run",
     "agentpact_update_worker_run",
     "agentpact_heartbeat_worker_run",
+    "agentpact_submit_delivery_for_worker_run",
     "agentpact_finish_task_session",
     "agentpact_gate_worker_run_for_approval",
     "agentpact_wait_for_requester_review_outcome",
