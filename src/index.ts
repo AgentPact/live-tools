@@ -452,6 +452,44 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
       [key: string]: unknown;
     };
   }>;
+  abandonTaskForWorkerRun(input: {
+    runId: string;
+    taskId?: string;
+    escrowId: bigint;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+    unwatchTask?: boolean;
+  }): Promise<{
+    txHash: string;
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+  }>;
+  claimAcceptanceTimeoutForWorkerRun(input: {
+    runId: string;
+    taskId?: string;
+    escrowId: bigint;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+    unwatchTask?: boolean;
+  }): Promise<{
+    txHash: string;
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+  }>;
   gateWorkerRunForApproval(input: {
     runId: string;
     taskId: string;
@@ -2301,6 +2339,78 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_abandon_task_for_worker_run",
+    title: "Abandon Task For Worker Run",
+    description: "Abandon the task on-chain and immediately close the worker run as cancelled. Use this when the host or owner decides the current execution path should stop and release the task back to the marketplace.",
+    context: "abandon_task_for_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().optional().describe("Optional task ID to stop watching after abandonment"),
+      escrowId: z.string().min(1).describe("On-chain escrow ID"),
+      percent: z.number().min(0).max(100).optional().describe("Optional worker progress to record"),
+      currentStep: z.string().optional().describe("Optional worker current step after abandonment"),
+      summary: z.string().optional().describe("Optional worker summary after abandonment"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the worker run"),
+      unwatchTask: z.boolean().optional().describe("Defaults to true when taskId is provided"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.abandonTaskForWorkerRun({
+        ...params,
+        escrowId: BigInt(params.escrowId),
+      });
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Task abandoned for worker run.\n` +
+            `runId=${result.run.id}\n` +
+            `txHash=${result.txHash}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_claim_acceptance_timeout_for_worker_run",
+    title: "Claim Acceptance Timeout For Worker Run",
+    description: "Claim acceptance timeout on-chain and close the worker run as succeeded. Use this when requester review does not arrive before the acceptance window expires.",
+    context: "claim_acceptance_timeout_for_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().optional().describe("Optional task ID to stop watching after timeout claim"),
+      escrowId: z.string().min(1).describe("On-chain escrow ID"),
+      percent: z.number().min(0).max(100).optional().describe("Optional worker progress to record"),
+      currentStep: z.string().optional().describe("Optional worker current step after timeout claim"),
+      summary: z.string().optional().describe("Optional worker summary after timeout claim"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the worker run"),
+      unwatchTask: z.boolean().optional().describe("Defaults to true when taskId is provided"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.claimAcceptanceTimeoutForWorkerRun({
+        ...params,
+        escrowId: BigInt(params.escrowId),
+      });
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Acceptance timeout claimed for worker run.\n` +
+            `runId=${result.run.id}\n` +
+            `txHash=${result.txHash}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_update_worker_run",
     title: "Update Worker Run",
     description: "Update worker progress, status, step, summary, or metadata for a previously created worker run.",
@@ -2858,6 +2968,8 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_get_task_execution_brief: "workspace",
   agentpact_update_worker_run: "workspace",
   agentpact_heartbeat_worker_run: "workspace",
+  agentpact_abandon_task_for_worker_run: "workspace",
+  agentpact_claim_acceptance_timeout_for_worker_run: "workspace",
   agentpact_finish_task_session: "workspace",
   agentpact_submit_delivery_for_worker_run: "workspace",
   agentpact_gate_worker_run_for_approval: "workspace",
@@ -2926,6 +3038,8 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_get_task_execution_brief: "low",
   agentpact_update_worker_run: "medium",
   agentpact_heartbeat_worker_run: "low",
+  agentpact_abandon_task_for_worker_run: "high",
+  agentpact_claim_acceptance_timeout_for_worker_run: "high",
   agentpact_finish_task_session: "medium",
   agentpact_submit_delivery_for_worker_run: "high",
   agentpact_gate_worker_run_for_approval: "high",
@@ -2961,6 +3075,8 @@ const dailyTools = [
   "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
   "agentpact_heartbeat_worker_run",
+  "agentpact_abandon_task_for_worker_run",
+  "agentpact_claim_acceptance_timeout_for_worker_run",
   "agentpact_resolve_stale_worker_runs",
   "agentpact_get_approval_requests",
   "agentpact_expire_overdue_approvals",
@@ -3047,6 +3163,8 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_create_worker_run",
     "agentpact_update_worker_run",
     "agentpact_heartbeat_worker_run",
+    "agentpact_abandon_task_for_worker_run",
+    "agentpact_claim_acceptance_timeout_for_worker_run",
     "agentpact_submit_delivery_for_worker_run",
     "agentpact_finish_task_session",
     "agentpact_gate_worker_run_for_approval",
