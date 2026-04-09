@@ -15,10 +15,10 @@
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
- * - Workspace (18): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
- *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, heartbeat_worker_run,
- *   finish_task_session, execute_worker_run_action, resolve_stale_worker_runs, get_approval_requests, request_node_approval,
- *   resolve_node_approval, expire_overdue_approvals, get_node_ops_overview, execute_task_action
+ * - Workspace (19): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
+ *   get_worker_runs, create_worker_run, begin_task_session, resume_task_session, get_task_execution_brief, update_worker_run,
+ *   heartbeat_worker_run, finish_task_session, execute_worker_run_action, resolve_stale_worker_runs, get_approval_requests,
+ *   request_node_approval, resolve_node_approval, expire_overdue_approvals, get_node_ops_overview, execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -242,6 +242,51 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
       portfolioLinks?: string[];
     };
   }): Promise<{
+    node: unknown;
+    run: {
+      id: string;
+      [key: string]: unknown;
+    };
+    task: {
+      access?: {
+        assignmentRole?: string;
+      } | null;
+      [key: string]: unknown;
+    };
+    brief: {
+      unreadChatCount?: number;
+      pendingApprovals?: unknown[];
+      clarifications?: unknown[];
+      workerRuns?: unknown[];
+      suggestedNextActions?: string[];
+      [key: string]: unknown;
+    };
+  }>;
+  resumeWorkerTaskSession(input: {
+    taskId: string;
+    hostKind: "OPENCLAW" | "CODEX" | "MCP" | "CUSTOM";
+    workerKey: string;
+    displayName?: string;
+    model?: string;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+    createIfMissing?: boolean;
+    ensureNode?: {
+      displayName?: string;
+      slug?: string;
+      description?: string;
+      automationMode?: "MANUAL" | "ASSISTED" | "AUTO";
+      headline?: string;
+      capabilityTags?: string[];
+      policy?: Record<string, unknown>;
+      agentType?: string;
+      capabilities?: string[];
+      preferredCategories?: string[];
+      portfolioLinks?: string[];
+    };
+  }): Promise<{
+    reusedExistingRun: boolean;
     node: unknown;
     run: {
       id: string;
@@ -1888,6 +1933,55 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_resume_task_session",
+    title: "Resume Task Session",
+    description: "Resume an existing active worker session for the same task and workerKey. Useful after a host restart or reconnect so the host reuses the live run instead of creating a duplicate.",
+    context: "resume_task_session",
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe("Task ID to resume"),
+      hostKind: workerHostKindSchema.describe("Worker host kind such as OPENCLAW, CODEX, MCP, or CUSTOM"),
+      workerKey: z.string().min(1).describe("Stable host-local worker identifier"),
+      displayName: z.string().optional().describe("Human-readable worker label"),
+      model: z.string().optional().describe("Optional model identifier"),
+      currentStep: z.string().optional().describe("Current step to record on resume"),
+      summary: z.string().optional().describe("Optional resume summary"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on resume"),
+      createIfMissing: z.boolean().optional().describe("When true, start a new session if no active one exists"),
+      ensureNode: z.object({
+        displayName: z.string().min(1).optional(),
+        slug: z.string().min(2).optional(),
+        description: z.string().optional(),
+        automationMode: nodeAutomationModeSchema.optional(),
+        headline: z.string().optional(),
+        capabilityTags: z.array(z.string()).optional(),
+        policy: jsonRecordSchema.optional(),
+        agentType: z.string().optional(),
+        capabilities: z.array(z.string()).optional(),
+        preferredCategories: z.array(z.string()).optional(),
+        portfolioLinks: z.array(z.string()).optional(),
+      }).strict().optional().describe("Optional node bootstrap data used only when the owner does not already have a node"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const session = await agent.resumeWorkerTaskSession(params);
+      const serialized = runtime.serialize(session);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `${session.reusedExistingRun ? "Task session resumed" : "Task session created"} for ${params.taskId}.\n` +
+            `runId=${session.run.id}\n` +
+            `nodeId=${session.node.id}\n` +
+            `assignmentRole=${session.task.access?.assignmentRole ?? "unknown"}\n` +
+            `pendingApprovals=${session.brief.pendingApprovals?.length ?? 0}\n\n` +
+            serialized,
+        }],
+        structuredContent: { session: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_get_task_execution_brief",
     title: "Get Task Execution Brief",
     description: "Retrieve a compact worker-facing execution brief for a task, including task details, worker runs, pending approvals, clarifications, recent messages, and suggested next actions.",
@@ -2312,6 +2406,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_get_worker_runs: "workspace",
   agentpact_create_worker_run: "workspace",
   agentpact_begin_task_session: "workspace",
+  agentpact_resume_task_session: "workspace",
   agentpact_get_task_execution_brief: "workspace",
   agentpact_update_worker_run: "workspace",
   agentpact_heartbeat_worker_run: "workspace",
@@ -2371,6 +2466,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_get_worker_runs: "low",
   agentpact_create_worker_run: "medium",
   agentpact_begin_task_session: "medium",
+  agentpact_resume_task_session: "medium",
   agentpact_get_task_execution_brief: "low",
   agentpact_update_worker_run: "medium",
   agentpact_heartbeat_worker_run: "low",
@@ -2397,6 +2493,7 @@ const recommendedFirstStepTools = [
 const dailyTools = [
   "agentpact_get_my_node",
   "agentpact_begin_task_session",
+  "agentpact_resume_task_session",
   "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
   "agentpact_heartbeat_worker_run",
@@ -2476,6 +2573,7 @@ const commonFlows: Record<string, string[]> = {
   ],
   workerExecution: [
     "agentpact_begin_task_session",
+    "agentpact_resume_task_session",
     "agentpact_get_task_execution_brief",
     "agentpact_create_worker_run",
     "agentpact_update_worker_run",
