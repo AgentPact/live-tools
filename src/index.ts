@@ -377,6 +377,69 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     metadata?: Record<string, unknown>;
     unwatchTask?: boolean;
   }): Promise<unknown>;
+  gateWorkerRunForApproval(input: {
+    runId: string;
+    taskId: string;
+    kind: "TASK_RESPONSE" | "DELIVERY_SUBMISSION" | "SIGNING_ACTION" | "PAYMENT_ACTION" | "TOOL_PERMISSION" | "STRATEGY_DECISION" | "CUSTOM";
+    title: string;
+    summary?: string;
+    payload?: Record<string, unknown>;
+    dueAt?: string;
+    percent?: number;
+    currentStep?: string;
+    runSummary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+    approval: {
+      id: string;
+      status?: string;
+      [key: string]: unknown;
+    };
+  }>;
+  waitForApprovalResolution(input: {
+    approvalId: string;
+    taskId: string;
+    timeoutMs?: number;
+    autoWatchTask?: boolean;
+  }): Promise<{
+    timedOut: boolean;
+    matchedEvent: string | null;
+    approval?: {
+      id: string;
+      status?: string;
+      [key: string]: unknown;
+    };
+    event?: Record<string, unknown>;
+  }>;
+  resumeWorkerRunAfterApproval(input: {
+    runId: string;
+    approvalId: string;
+    taskId: string;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+    approval: {
+      id: string;
+      status?: string;
+      [key: string]: unknown;
+    };
+  }>;
 };
 
 type ToolTextContent = { type: "text"; text: string };
@@ -2098,6 +2161,105 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_gate_worker_run_for_approval",
+    title: "Gate Worker Run For Approval",
+    description: "Atomically create a node-owner approval request and move the worker run into WAITING_APPROVAL. Use this when the host reaches a risky step and must pause for a human decision.",
+    context: "gate_worker_run_for_approval",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      taskId: z.string().min(1).describe("Task ID linked to the worker run"),
+      kind: approvalRequestKindSchema.describe("Approval kind such as DELIVERY_SUBMISSION or STRATEGY_DECISION"),
+      title: z.string().min(1).describe("Approval title shown to the node owner"),
+      summary: z.string().optional().describe("Optional short summary for the approval record"),
+      payload: jsonRecordSchema.optional().describe("Optional structured payload for the owner"),
+      dueAt: z.string().optional().describe("Optional ISO timestamp deadline"),
+      percent: z.number().min(0).max(100).optional().describe("Optional run progress to record while pausing"),
+      currentStep: z.string().optional().describe("Current step shown on the paused run"),
+      runSummary: z.string().optional().describe("Optional run summary shown while waiting"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the paused run"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.gateWorkerRunForApproval(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Worker run gated for approval.\n` +
+            `runId=${result.run.id}\n` +
+            `approvalId=${result.approval.id}\n` +
+            `approvalStatus=${result.approval.status ?? "unknown"}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_wait_for_approval_resolution",
+    title: "Wait For Approval Resolution",
+    description: "Wait for a specific approval request to resolve and then reload its final status. This saves the host from manually wiring wait-for-event plus approval lookup.",
+    context: "wait_for_approval_resolution",
+    inputSchema: z.object({
+      approvalId: z.string().min(1).describe("Approval request ID"),
+      taskId: z.string().min(1).describe("Task ID linked to the approval"),
+      timeoutMs: z.number().int().min(1000).max(600000).optional().describe("Optional wait timeout in milliseconds"),
+      autoWatchTask: z.boolean().optional().describe("Defaults to true to ensure the task is being watched while waiting"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.waitForApprovalResolution(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            (result.timedOut
+              ? `Approval ${params.approvalId} did not resolve before timeout.\n\n`
+              : `Approval ${params.approvalId} resolved with status=${result.approval?.status ?? "unknown"}.\n\n`) +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_resume_worker_run_after_approval",
+    title: "Resume Worker Run After Approval",
+    description: "Reload an approval, require it to be APPROVED, and move the worker run back to RUNNING. Use this after the owner approves the blocked step.",
+    context: "resume_worker_run_after_approval",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      approvalId: z.string().min(1).describe("Approval request ID"),
+      taskId: z.string().min(1).describe("Task ID linked to the approval"),
+      percent: z.number().min(0).max(100).optional().describe("Optional run progress to record on resume"),
+      currentStep: z.string().optional().describe("Current step shown after resuming"),
+      summary: z.string().optional().describe("Optional summary shown after resuming"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the resumed run"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.resumeWorkerRunAfterApproval(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Worker run resumed after approval.\n` +
+            `runId=${result.run.id}\n` +
+            `approvalId=${result.approval.id}\n` +
+            `approvalStatus=${result.approval.status ?? "unknown"}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_execute_worker_run_action",
     title: "Execute Worker Run Action",
     description: "Execute an operator action against a worker run, including cancel, mark failed, or retry.",
@@ -2414,6 +2576,9 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_update_worker_run: "workspace",
   agentpact_heartbeat_worker_run: "workspace",
   agentpact_finish_task_session: "workspace",
+  agentpact_gate_worker_run_for_approval: "workspace",
+  agentpact_wait_for_approval_resolution: "workspace",
+  agentpact_resume_worker_run_after_approval: "workspace",
   agentpact_execute_worker_run_action: "workspace",
   agentpact_resolve_stale_worker_runs: "workspace",
   agentpact_get_approval_requests: "workspace",
@@ -2474,6 +2639,9 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_update_worker_run: "medium",
   agentpact_heartbeat_worker_run: "low",
   agentpact_finish_task_session: "medium",
+  agentpact_gate_worker_run_for_approval: "high",
+  agentpact_wait_for_approval_resolution: "low",
+  agentpact_resume_worker_run_after_approval: "medium",
   agentpact_execute_worker_run_action: "high",
   agentpact_resolve_stale_worker_runs: "high",
   agentpact_get_approval_requests: "low",
@@ -2515,6 +2683,7 @@ const dailyTools = [
   "agentpact_get_revision_details",
   "agentpact_get_notifications",
   "agentpact_wait_for_node_event",
+  "agentpact_wait_for_approval_resolution",
   "agentpact_mark_notifications_read",
 ] as const;
 
@@ -2582,15 +2751,20 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_update_worker_run",
     "agentpact_heartbeat_worker_run",
     "agentpact_finish_task_session",
+    "agentpact_gate_worker_run_for_approval",
+    "agentpact_resume_worker_run_after_approval",
     "agentpact_execute_worker_run_action",
     "agentpact_resolve_stale_worker_runs",
     "agentpact_get_worker_runs",
   ],
   approvalLoop: [
+    "agentpact_gate_worker_run_for_approval",
     "agentpact_request_node_approval",
     "agentpact_get_approval_requests",
     "agentpact_wait_for_node_event",
+    "agentpact_wait_for_approval_resolution",
     "agentpact_resolve_node_approval",
+    "agentpact_resume_worker_run_after_approval",
     "agentpact_expire_overdue_approvals",
     "agentpact_execute_task_action",
   ],
