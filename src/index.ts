@@ -15,7 +15,9 @@
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
- * - Workspace (1): get_task_inbox_summary
+ * - Workspace (14): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
+ *   get_worker_runs, create_worker_run, update_worker_run, execute_worker_run_action,
+ *   get_approval_requests, request_node_approval, resolve_node_approval, get_node_ops_overview, execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -358,6 +360,38 @@ const preflightPresetSchema = z.enum([
   "approve_usdc_to_escrow",
   "approve_usdc_to_tipjar",
 ]);
+const nodeAutomationModeSchema = z.enum(["MANUAL", "ASSISTED", "AUTO"]);
+const nodeStatusSchema = z.enum(["ACTIVE", "PAUSED", "ARCHIVED"]);
+const workerHostKindSchema = z.enum(["OPENCLAW", "CODEX", "MCP", "CUSTOM"]);
+const workerRunStatusSchema = z.enum([
+  "QUEUED",
+  "STARTING",
+  "RUNNING",
+  "WAITING_APPROVAL",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+]);
+const approvalRequestKindSchema = z.enum([
+  "TASK_RESPONSE",
+  "DELIVERY_SUBMISSION",
+  "SIGNING_ACTION",
+  "PAYMENT_ACTION",
+  "TOOL_PERMISSION",
+  "STRATEGY_DECISION",
+  "CUSTOM",
+]);
+const approvalRequestStatusSchema = z.enum([
+  "PENDING",
+  "APPROVED",
+  "REJECTED",
+  "EXPIRED",
+  "CANCELLED",
+]);
+const nodeActionSchema = z.enum(["PAUSE_NODE", "RESUME_NODE", "SET_AUTOMATION_MODE"]);
+const workerRunActionSchema = z.enum(["CANCEL", "MARK_FAILED", "RETRY"]);
+const taskActionSchema = z.enum(["NUDGE_REQUESTER", "MARK_MANUAL_REVIEW", "ADD_NOTE"]);
+const jsonRecordSchema = z.record(z.string(), z.unknown());
 
 // ============================================================================
 // Utility Functions
@@ -388,6 +422,46 @@ function serializeForText(value: unknown): string {
     (_, current) => (typeof current === "bigint" ? `${current.toString()}n` : current),
     2
   );
+}
+
+function formatTaskDetailSnapshot(details: {
+  taskId?: string;
+  title?: string | null;
+  description?: string | null;
+  category?: string | null;
+  difficulty?: string | null;
+  urgency?: string | null;
+  rewardAmount?: string | null;
+  tokenAddress?: string | null;
+  deliveryDurationSeconds?: number | null;
+  acceptanceWindowHrs?: number | null;
+  maxRevisions?: number | null;
+  criteriaCount?: number | null;
+  status?: string | null;
+  access?: {
+    assignmentRole?: string;
+    canViewConfidential?: boolean;
+  } | null;
+}) {
+  const lines = [
+    `taskId: ${details.taskId ?? "unknown"}`,
+    `title: ${details.title ?? "not returned"}`,
+    `description: ${details.description ?? "not returned"}`,
+    `category: ${details.category ?? "not returned"}`,
+    `difficulty: ${details.difficulty ?? "not returned"}`,
+    `urgency: ${details.urgency ?? "not returned"}`,
+    `rewardAmount: ${details.rewardAmount ?? "not returned"}`,
+    `tokenAddress: ${details.tokenAddress ?? "not returned"}`,
+    `deliveryDurationSeconds: ${details.deliveryDurationSeconds ?? "not returned"}`,
+    `acceptanceWindowHrs: ${details.acceptanceWindowHrs ?? "not returned"}`,
+    `maxRevisions: ${details.maxRevisions ?? "not returned"}`,
+    `criteriaCount: ${details.criteriaCount ?? "not returned"}`,
+    `status: ${details.status ?? "not returned"}`,
+    `assignmentRole: ${details.access?.assignmentRole ?? "not returned"}`,
+    `canViewConfidential: ${details.access?.canViewConfidential ?? "not returned"}`,
+  ];
+
+  return lines.join("\n");
 }
 
 function formatError(error: unknown, context: string): LiveToolResult {
@@ -697,7 +771,7 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   defineTool({
     name: "agentpact_fetch_task_details",
     title: "Fetch Task Details",
-    description: "Retrieve full task details including confidential materials. Available once you have been selected and authorized by the requester, including the pre-claim evaluation stage.",
+    description: "Retrieve a full task fact snapshot plus confidential materials when authorized. Use the returned taskId and exact fields as the source of truth; if a field is absent, report it as not returned instead of guessing.",
     context: "fetch_task_details",
     inputSchema: z.object({
       taskId: z.string().describe("The task ID to fetch details for"),
@@ -708,7 +782,10 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
       const agent = await runtime.getAgent();
       const details = await agent.fetchTaskDetails(params.taskId);
       return {
-        content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+        content: [{
+          type: "text",
+          text: `Task fact snapshot:\n${formatTaskDetailSnapshot(details)}\n\nRaw details JSON:\n${JSON.stringify(details, null, 2)}`,
+        }],
         structuredContent: { details },
       };
     },
@@ -1443,6 +1520,321 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
     },
   }),
 
+  defineTool({
+    name: "agentpact_get_my_node",
+    title: "Get My Agent Node",
+    description: "Read the current owner's Agent Node profile, automation mode, policy summary, and lightweight operating stats.",
+    context: "get_my_node",
+    inputSchema: z.object({}).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime) => {
+      const agent = await runtime.getAgent();
+      const node = await agent.getMyNode();
+      const serialized = runtime.serialize(node);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { node: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_ensure_node",
+    title: "Ensure Agent Node",
+    description: "Ensure that the current owner has an Agent Node. Creates one when missing and returns the active node profile.",
+    context: "ensure_node",
+    inputSchema: z.object({
+      displayName: z.string().min(1).optional().describe("Optional preferred public display name for the node"),
+      slug: z.string().min(2).optional().describe("Optional public slug"),
+      description: z.string().optional().describe("Optional node description"),
+      automationMode: nodeAutomationModeSchema.optional().describe("Default automation mode for this node"),
+      headline: z.string().optional().describe("Short public headline shown in candidate lists"),
+      capabilityTags: z.array(z.string()).optional().describe("Capability tags used for matching"),
+      policy: jsonRecordSchema.optional().describe("Structured node policy object such as maxConcurrentTasks or approval rules"),
+      agentType: z.string().optional().describe("Optional legacy provider profile agent type"),
+      capabilities: z.array(z.string()).optional().describe("Optional legacy provider capability list"),
+      preferredCategories: z.array(z.string()).optional().describe("Optional preferred task categories"),
+      portfolioLinks: z.array(z.string()).optional().describe("Optional portfolio links"),
+    }).strict(),
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const node = await agent.ensureNode(params);
+      const serialized = runtime.serialize(node);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { node: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_update_my_node",
+    title: "Update Agent Node",
+    description: "Update the current Agent Node's public metadata, automation mode, policy, or availability status.",
+    context: "update_my_node",
+    inputSchema: z.object({
+      displayName: z.string().min(1).optional().describe("Updated public display name"),
+      slug: z.string().min(2).optional().describe("Updated public slug"),
+      description: z.string().optional().describe("Updated description"),
+      status: nodeStatusSchema.optional().describe("ACTIVE, PAUSED, or ARCHIVED"),
+      automationMode: nodeAutomationModeSchema.optional().describe("MANUAL, ASSISTED, or AUTO"),
+      headline: z.string().optional().describe("Updated public headline"),
+      capabilityTags: z.array(z.string()).optional().describe("Updated capability tags"),
+      policy: jsonRecordSchema.optional().describe("Updated structured node policy"),
+      agentType: z.string().optional().describe("Updated legacy provider profile agent type"),
+      capabilities: z.array(z.string()).optional().describe("Updated legacy provider capability list"),
+      preferredCategories: z.array(z.string()).optional().describe("Updated preferred task categories"),
+      portfolioLinks: z.array(z.string()).optional().describe("Updated portfolio links"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const node = await agent.updateMyNode(params);
+      const serialized = runtime.serialize(node);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { node: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_execute_node_action",
+    title: "Execute Node Action",
+    description: "Execute a control-plane action for the current Agent Node, such as pause, resume, or switching automation mode.",
+    context: "execute_node_action",
+    inputSchema: z.object({
+      action: nodeActionSchema.describe("PAUSE_NODE, RESUME_NODE, or SET_AUTOMATION_MODE"),
+      automationMode: nodeAutomationModeSchema.optional().describe("Required when action is SET_AUTOMATION_MODE"),
+      note: z.string().optional().describe("Optional operator note for audit context"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const node = await agent.executeNodeAction({
+        action: params.action,
+        automationMode: params.automationMode,
+        note: params.note,
+      });
+      const serialized = runtime.serialize(node);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { node: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_worker_runs",
+    title: "Get Worker Runs",
+    description: "List worker runs owned by the current Agent Node. Useful for checking queued work, progress, waiting approvals, or failures.",
+    context: "get_worker_runs",
+    inputSchema: z.object({
+      status: workerRunStatusSchema.optional().describe("Optional worker run status filter"),
+      taskId: z.string().optional().describe("Optional task filter"),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of runs to return"),
+      offset: z.number().int().min(0).default(0).describe("Pagination offset"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const runs = await agent.getNodeWorkerRuns(params);
+      const serialized = runtime.serialize(runs);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { runs: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_create_worker_run",
+    title: "Create Worker Run",
+    description: "Create a worker run for the current Agent Node. Use this when dispatching a task to OpenClaw, Codex, MCP, or another custom host.",
+    context: "create_worker_run",
+    inputSchema: z.object({
+      taskId: z.string().optional().describe("Optional task linked to this worker run"),
+      hostKind: workerHostKindSchema.describe("Worker host kind such as OPENCLAW, CODEX, MCP, or CUSTOM"),
+      workerKey: z.string().min(1).describe("Stable host-local worker identifier"),
+      displayName: z.string().optional().describe("Human-readable worker label"),
+      model: z.string().optional().describe("Optional model identifier"),
+      status: workerRunStatusSchema.optional().describe("Initial status, defaults to platform-side default"),
+      percent: z.number().min(0).max(100).optional().describe("Optional progress percentage"),
+      currentStep: z.string().optional().describe("Current execution step"),
+      summary: z.string().optional().describe("Short run summary"),
+      metadata: jsonRecordSchema.optional().describe("Structured metadata such as repo, branch, or run URL"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const run = await agent.createWorkerRun(params);
+      const serialized = runtime.serialize(run);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { run: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_update_worker_run",
+    title: "Update Worker Run",
+    description: "Update worker progress, status, step, summary, or metadata for a previously created worker run.",
+    context: "update_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      status: workerRunStatusSchema.optional().describe("Updated worker run status"),
+      percent: z.number().min(0).max(100).optional().describe("Updated progress percentage"),
+      currentStep: z.string().optional().describe("Updated current step"),
+      summary: z.string().optional().describe("Updated short run summary"),
+      metadata: jsonRecordSchema.optional().describe("Updated structured metadata"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const { runId, ...updates } = params;
+      const agent = await runtime.getAgent();
+      const run = await agent.updateWorkerRun(runId, updates);
+      const serialized = runtime.serialize(run);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { run: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_execute_worker_run_action",
+    title: "Execute Worker Run Action",
+    description: "Execute an operator action against a worker run, including cancel, mark failed, or retry.",
+    context: "execute_worker_run_action",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      action: workerRunActionSchema.describe("CANCEL, MARK_FAILED, or RETRY"),
+      note: z.string().optional().describe("Optional audit note"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const result = await agent.executeWorkerRunAction(params.runId, params.action, params.note);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_approval_requests",
+    title: "Get Approval Requests",
+    description: "List approval requests for the current Agent Node, including pending, approved, rejected, expired, or cancelled items.",
+    context: "get_approval_requests",
+    inputSchema: z.object({
+      status: approvalRequestStatusSchema.optional().describe("Optional approval status filter"),
+      taskId: z.string().optional().describe("Optional task filter"),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum number of approvals to return"),
+      offset: z.number().int().min(0).default(0).describe("Pagination offset"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const approvals = await agent.getApprovalRequests(params);
+      const serialized = runtime.serialize(approvals);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { approvals: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_request_node_approval",
+    title: "Request Node Approval",
+    description: "Create an approval request for the current Agent Node owner. Use this when a worker needs a human decision before continuing.",
+    context: "request_node_approval",
+    inputSchema: z.object({
+      taskId: z.string().optional().describe("Optional related task ID"),
+      workerRunId: z.string().optional().describe("Optional related worker run ID"),
+      kind: approvalRequestKindSchema.describe("Approval kind such as DELIVERY_SUBMISSION or STRATEGY_DECISION"),
+      title: z.string().min(1).describe("Approval title"),
+      summary: z.string().optional().describe("Short approval summary"),
+      payload: jsonRecordSchema.optional().describe("Structured approval payload"),
+      dueAt: z.string().optional().describe("Optional ISO timestamp deadline"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const approval = await agent.requestApproval(params);
+      const serialized = runtime.serialize(approval);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { approval: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_resolve_node_approval",
+    title: "Resolve Node Approval",
+    description: "Resolve a pending approval request by approving or rejecting it together with an optional response note.",
+    context: "resolve_node_approval",
+    inputSchema: z.object({
+      approvalId: z.string().min(1).describe("Approval request ID"),
+      decision: z.enum(["APPROVED", "REJECTED"]).describe("Resolution decision"),
+      responseNote: z.string().optional().describe("Optional operator response note"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const approval = await agent.resolveApprovalRequest(params.approvalId, {
+        decision: params.decision,
+        responseNote: params.responseNote,
+      });
+      const serialized = runtime.serialize(approval);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { approval: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_get_node_ops_overview",
+    title: "Get Node Ops Overview",
+    description: "Read the current Agent Node operations watchtower summary, including stale workers, blocked approvals, and tasks needing attention.",
+    context: "get_node_ops_overview",
+    inputSchema: z.object({}).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime) => {
+      const agent = await runtime.getAgent();
+      const overview = await agent.getNodeOpsOverview();
+      const serialized = runtime.serialize(overview);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { overview: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
+    name: "agentpact_execute_task_action",
+    title: "Execute Task Action",
+    description: "Execute a node-side intervention against a task, such as nudging the requester, marking manual review, or adding an operator note.",
+    context: "execute_task_action",
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe("Task ID"),
+      action: taskActionSchema.describe("NUDGE_REQUESTER, MARK_MANUAL_REVIEW, or ADD_NOTE"),
+      note: z.string().optional().describe("Optional note stored with the task action"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent();
+      const result = await agent.executeTaskAction(params.taskId, params.action, params.note);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{ type: "text", text: serialized }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
   // ==========================================================================
   // SOCIAL TOOLS (2)
   // ==========================================================================
@@ -1564,6 +1956,19 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_claim_acceptance_timeout: "timeout",
   agentpact_claim_delivery_timeout: "timeout",
   agentpact_get_task_inbox_summary: "workspace",
+  agentpact_get_my_node: "workspace",
+  agentpact_ensure_node: "workspace",
+  agentpact_update_my_node: "workspace",
+  agentpact_execute_node_action: "workspace",
+  agentpact_get_worker_runs: "workspace",
+  agentpact_create_worker_run: "workspace",
+  agentpact_update_worker_run: "workspace",
+  agentpact_execute_worker_run_action: "workspace",
+  agentpact_get_approval_requests: "workspace",
+  agentpact_request_node_approval: "workspace",
+  agentpact_resolve_node_approval: "workspace",
+  agentpact_get_node_ops_overview: "workspace",
+  agentpact_execute_task_action: "workspace",
 };
 
 const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
@@ -1603,17 +2008,35 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_claim_acceptance_timeout: "high",
   agentpact_claim_delivery_timeout: "high",
   agentpact_get_task_inbox_summary: "low",
+  agentpact_get_my_node: "low",
+  agentpact_ensure_node: "medium",
+  agentpact_update_my_node: "medium",
+  agentpact_execute_node_action: "medium",
+  agentpact_get_worker_runs: "low",
+  agentpact_create_worker_run: "medium",
+  agentpact_update_worker_run: "medium",
+  agentpact_execute_worker_run_action: "high",
+  agentpact_get_approval_requests: "low",
+  agentpact_request_node_approval: "medium",
+  agentpact_resolve_node_approval: "high",
+  agentpact_get_node_ops_overview: "low",
+  agentpact_execute_task_action: "medium",
 };
 
 const recommendedFirstStepTools = [
+  "agentpact_ensure_node",
+  "agentpact_get_my_node",
   "agentpact_get_task_inbox_summary",
   "agentpact_get_my_tasks",
   "agentpact_get_available_tasks",
-  "agentpact_fetch_task_details",
-  "agentpact_preflight_check",
+  "agentpact_get_node_ops_overview",
 ] as const;
 
 const dailyTools = [
+  "agentpact_get_my_node",
+  "agentpact_get_worker_runs",
+  "agentpact_get_approval_requests",
+  "agentpact_get_node_ops_overview",
   "agentpact_get_task_inbox_summary",
   "agentpact_get_my_tasks",
   "agentpact_fetch_task_details",
@@ -1674,6 +2097,25 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_preflight_check",
     "agentpact_claim_acceptance_timeout",
     "agentpact_claim_delivery_timeout",
+  ],
+  nodeControlPlane: [
+    "agentpact_ensure_node",
+    "agentpact_get_my_node",
+    "agentpact_update_my_node",
+    "agentpact_execute_node_action",
+    "agentpact_get_node_ops_overview",
+  ],
+  workerExecution: [
+    "agentpact_create_worker_run",
+    "agentpact_update_worker_run",
+    "agentpact_execute_worker_run_action",
+    "agentpact_get_worker_runs",
+  ],
+  approvalLoop: [
+    "agentpact_request_node_approval",
+    "agentpact_get_approval_requests",
+    "agentpact_resolve_node_approval",
+    "agentpact_execute_task_action",
   ],
 };
 
