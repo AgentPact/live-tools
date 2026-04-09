@@ -454,6 +454,23 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     revisionDetails?: unknown;
     event?: Record<string, unknown>;
   }>;
+  syncWorkerRunWithRequesterReview(input: {
+    runId: string;
+    outcome: "TASK_ACCEPTED" | "REVISION_REQUESTED" | "TASK_SETTLED";
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    outcome: "TASK_ACCEPTED" | "REVISION_REQUESTED" | "TASK_SETTLED";
+    run: {
+      id: string;
+      status?: string;
+      currentStep?: string;
+      summary?: string;
+      [key: string]: unknown;
+    };
+  }>;
 };
 
 type ToolTextContent = { type: "text"; text: string };
@@ -2269,6 +2286,38 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_sync_worker_run_with_requester_review",
+    title: "Sync Worker Run With Requester Review",
+    description: "Apply a requester review outcome back onto the worker run. Accepted or settled work is marked succeeded; revision requests move the run back to RUNNING with revision-focused status text.",
+    context: "sync_worker_run_with_requester_review",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      outcome: z.enum(["TASK_ACCEPTED", "REVISION_REQUESTED", "TASK_SETTLED"]).describe("Requester review outcome to apply"),
+      percent: z.number().min(0).max(100).optional().describe("Optional progress percentage to record"),
+      currentStep: z.string().optional().describe("Optional worker current step override"),
+      summary: z.string().optional().describe("Optional worker summary override"),
+      metadata: jsonRecordSchema.optional().describe("Optional metadata patch stored on the worker run"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.syncWorkerRunWithRequesterReview(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Worker run synced from requester review.\n` +
+            `runId=${result.run.id}\n` +
+            `outcome=${result.outcome}\n` +
+            `status=${String(result.run.status ?? "unknown")}\n\n` +
+            serialized,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_resume_worker_run_after_approval",
     title: "Resume Worker Run After Approval",
     description: "Reload an approval, require it to be APPROVED, and move the worker run back to RUNNING. Use this after the owner approves the blocked step.",
@@ -2621,6 +2670,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_gate_worker_run_for_approval: "workspace",
   agentpact_wait_for_approval_resolution: "workspace",
   agentpact_wait_for_requester_review_outcome: "workspace",
+  agentpact_sync_worker_run_with_requester_review: "workspace",
   agentpact_resume_worker_run_after_approval: "workspace",
   agentpact_execute_worker_run_action: "workspace",
   agentpact_resolve_stale_worker_runs: "workspace",
@@ -2685,6 +2735,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_gate_worker_run_for_approval: "high",
   agentpact_wait_for_approval_resolution: "low",
   agentpact_wait_for_requester_review_outcome: "low",
+  agentpact_sync_worker_run_with_requester_review: "medium",
   agentpact_resume_worker_run_after_approval: "medium",
   agentpact_execute_worker_run_action: "high",
   agentpact_resolve_stale_worker_runs: "high",
@@ -2798,6 +2849,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_finish_task_session",
     "agentpact_gate_worker_run_for_approval",
     "agentpact_wait_for_requester_review_outcome",
+    "agentpact_sync_worker_run_with_requester_review",
     "agentpact_resume_worker_run_after_approval",
     "agentpact_execute_worker_run_action",
     "agentpact_resolve_stale_worker_runs",
@@ -2812,6 +2864,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_wait_for_requester_review_outcome",
     "agentpact_resolve_node_approval",
     "agentpact_resume_worker_run_after_approval",
+    "agentpact_sync_worker_run_with_requester_review",
     "agentpact_expire_overdue_approvals",
     "agentpact_execute_task_action",
   ],
