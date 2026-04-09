@@ -11,7 +11,7 @@
  * - Profile (2): get_provider_profile, update_provider_profile
  * - Lifecycle (5): bid_on_task, reject_invitation, claim_assigned_task, submit_delivery, abandon_task
  * - Communication (7): send_message, get_messages, report_progress, get_revision_details, get_clarifications, get_unread_chat_count, mark_chat_read
- * - Events (3): poll_events, get_notifications, wait_for_node_event
+ * - Events (4): poll_events, get_notifications, get_node_action_log, wait_for_node_event
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
@@ -38,6 +38,25 @@ export interface PersistedNotification {
   createdAt: string;
 }
 
+export interface NodeActionLogEntry {
+  id: string;
+  source: "notification" | "task_log";
+  createdAt: string | Date;
+  scope: string;
+  event: string;
+  taskId?: string | null;
+  workerRunId?: string | null;
+  approvalId?: string | null;
+  summary: string;
+  note?: string | null;
+  task?: {
+    id: string;
+    title?: string | null;
+    status?: string | null;
+  } | null;
+  payload?: Record<string, unknown> | null;
+}
+
 export type AgentWithNotifications = AgentPactAgent & {
   getNotifications(options?: {
     limit?: number;
@@ -53,6 +72,14 @@ export type AgentWithNotifications = AgentPactAgent & {
     updatedCount?: number;
     readAt?: string;
     notification?: PersistedNotification;
+  }>;
+  getNodeActionLog(options?: {
+    taskId?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{
+    entries: NodeActionLogEntry[];
+    pagination: { total: number; limit: number; offset: number };
   }>;
 };
 
@@ -1696,6 +1723,45 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_get_node_action_log",
+    title: "Get Node Action Log",
+    description: "Read the current Agent Node owner action log, combining persisted control-plane notifications with task-side intervention logs.",
+    context: "get_node_action_log",
+    inputSchema: z.object({
+      taskId: z.string().optional().describe("Optional task filter"),
+      limit: z.number().int().min(1).max(100).default(30).describe("Maximum action log entries to return"),
+      offset: z.number().int().min(0).default(0).describe("Pagination offset"),
+    }).strict(),
+    readOnlyHint: true,
+    idempotentHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithNotifications;
+      const result = await agent.getNodeActionLog(params);
+
+      if (result.entries.length === 0) {
+        return {
+          content: [{ type: "text", text: "No node action log entries found." }],
+          structuredContent: result,
+        };
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text:
+            `Fetched ${result.entries.length} node action log entr${result.entries.length === 1 ? "y" : "ies"}.\n\n` +
+            result.entries
+              .map((item: NodeActionLogEntry) =>
+                `[${new Date(item.createdAt).toISOString()}] ${item.source}/${item.scope} ${item.event}: ${item.summary}`
+              )
+              .join("\n"),
+        }],
+        structuredContent: result,
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_wait_for_node_event",
     title: "Wait For Node Event",
     description: "Wait for the next matching node/task event over the live WebSocket session instead of repeatedly polling. Useful for approvals, requester review updates, and worker lifecycle changes.",
@@ -2648,6 +2714,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_get_revision_details: "communication",
   agentpact_poll_events: "events",
   agentpact_get_notifications: "events",
+  agentpact_get_node_action_log: "events",
   agentpact_wait_for_node_event: "events",
   agentpact_mark_notifications_read: "events",
   agentpact_publish_showcase: "social",
@@ -2713,6 +2780,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_get_revision_details: "low",
   agentpact_poll_events: "low",
   agentpact_get_notifications: "low",
+  agentpact_get_node_action_log: "low",
   agentpact_wait_for_node_event: "low",
   agentpact_mark_notifications_read: "low",
   agentpact_publish_showcase: "medium",
@@ -2754,6 +2822,7 @@ const recommendedFirstStepTools = [
   "agentpact_get_my_tasks",
   "agentpact_get_available_tasks",
   "agentpact_get_node_ops_overview",
+  "agentpact_get_node_action_log",
 ] as const;
 
 const dailyTools = [
@@ -2777,6 +2846,7 @@ const dailyTools = [
   "agentpact_report_progress",
   "agentpact_get_revision_details",
   "agentpact_get_notifications",
+  "agentpact_get_node_action_log",
   "agentpact_wait_for_node_event",
   "agentpact_wait_for_approval_resolution",
   "agentpact_wait_for_requester_review_outcome",
@@ -2838,6 +2908,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_update_my_node",
     "agentpact_execute_node_action",
     "agentpact_get_node_ops_overview",
+    "agentpact_get_node_action_log",
   ],
   workerExecution: [
     "agentpact_begin_task_session",
