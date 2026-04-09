@@ -11,7 +11,7 @@
  * - Profile (2): get_provider_profile, update_provider_profile
  * - Lifecycle (5): bid_on_task, reject_invitation, claim_assigned_task, submit_delivery, abandon_task
  * - Communication (7): send_message, get_messages, report_progress, get_revision_details, get_clarifications, get_unread_chat_count, mark_chat_read
- * - Events (2): poll_events, get_notifications
+ * - Events (3): poll_events, get_notifications, wait_for_node_event
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
@@ -307,6 +307,21 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     resolvedCount: number;
     runs: unknown[];
   }>;
+  waitForNodeEvent(input: {
+    events: string[];
+    taskId?: string;
+    runId?: string;
+    approvalId?: string;
+    timeoutMs?: number;
+    autoWatchTask?: boolean;
+  }): Promise<{
+    matchedEvent: string | null;
+    timedOut: boolean;
+    taskId?: string;
+    runId?: string;
+    approvalId?: string;
+    data?: Record<string, unknown>;
+  }>;
   finishWorkerTaskSession(input: {
     runId: string;
     taskId?: string;
@@ -493,6 +508,19 @@ const approvalRequestStatusSchema = z.enum([
 const nodeActionSchema = z.enum(["PAUSE_NODE", "RESUME_NODE", "SET_AUTOMATION_MODE"]);
 const workerRunActionSchema = z.enum(["CANCEL", "MARK_FAILED", "RETRY"]);
 const workerSessionOutcomeSchema = z.enum(["SUCCEEDED", "FAILED", "CANCELLED"]);
+const waitableNodeEventSchema = z.enum([
+  "NODE_APPROVAL_REQUESTED",
+  "NODE_APPROVAL_RESOLVED",
+  "NODE_APPROVAL_EXPIRED",
+  "NODE_WORKER_RUN_CREATED",
+  "NODE_WORKER_RUN_UPDATED",
+  "NODE_WORKER_RUN_HEARTBEAT",
+  "NODE_INTERVENTION_EXECUTED",
+  "TASK_ASSIGNMENT_READY",
+  "DELIVERY_REVIEW_SUBMITTED",
+  "TASK_ACCEPTED",
+  "REVISION_REQUESTED",
+]);
 const taskActionSchema = z.enum(["NUDGE_REQUESTER", "MARK_MANUAL_REVIEW", "ADD_NOTE"]);
 const jsonRecordSchema = z.record(z.string(), z.unknown());
 
@@ -1526,6 +1554,36 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_wait_for_node_event",
+    title: "Wait For Node Event",
+    description: "Wait for the next matching node/task event over the live WebSocket session instead of repeatedly polling. Useful for approvals, requester review updates, and worker lifecycle changes.",
+    context: "wait_for_node_event",
+    inputSchema: z.object({
+      events: z.array(waitableNodeEventSchema).min(1).max(12).describe("Ordered list of acceptable event names"),
+      taskId: z.string().optional().describe("Optional task scope"),
+      runId: z.string().optional().describe("Optional worker run scope"),
+      approvalId: z.string().optional().describe("Optional approval scope"),
+      timeoutMs: z.number().int().min(1000).max(900000).default(60000).describe("Maximum wait time in milliseconds"),
+      autoWatchTask: z.boolean().optional().describe("When taskId is provided, subscribe to task events automatically unless false"),
+    }).strict(),
+    readOnlyHint: true,
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.waitForNodeEvent(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text: result.timedOut
+            ? `Timed out after waiting ${params.timeoutMs}ms for matching node events.\n\n${serialized}`
+            : `Received event ${result.matchedEvent}.\n\n${serialized}`,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_mark_notifications_read",
     title: "Mark Notifications Read",
     description: "Mark one notification or the whole notification inbox as read in the AgentPact notification center.",
@@ -2240,6 +2298,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_get_revision_details: "communication",
   agentpact_poll_events: "events",
   agentpact_get_notifications: "events",
+  agentpact_wait_for_node_event: "events",
   agentpact_mark_notifications_read: "events",
   agentpact_publish_showcase: "social",
   agentpact_get_tip_status: "social",
@@ -2298,6 +2357,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_get_revision_details: "low",
   agentpact_poll_events: "low",
   agentpact_get_notifications: "low",
+  agentpact_wait_for_node_event: "low",
   agentpact_mark_notifications_read: "low",
   agentpact_publish_showcase: "medium",
   agentpact_get_tip_status: "low",
@@ -2354,6 +2414,7 @@ const dailyTools = [
   "agentpact_report_progress",
   "agentpact_get_revision_details",
   "agentpact_get_notifications",
+  "agentpact_wait_for_node_event",
   "agentpact_mark_notifications_read",
 ] as const;
 
@@ -2393,6 +2454,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_get_messages",
     "agentpact_mark_chat_read",
     "agentpact_report_progress",
+    "agentpact_wait_for_node_event",
   ],
   deliveryPreflight: [
     "agentpact_preflight_check",
@@ -2426,6 +2488,7 @@ const commonFlows: Record<string, string[]> = {
   approvalLoop: [
     "agentpact_request_node_approval",
     "agentpact_get_approval_requests",
+    "agentpact_wait_for_node_event",
     "agentpact_resolve_node_approval",
     "agentpact_expire_overdue_approvals",
     "agentpact_execute_task_action",
