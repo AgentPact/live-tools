@@ -15,10 +15,10 @@
  * - Notifications (1): mark_notifications_read
  * - Social (2): publish_showcase, get_tip_status
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
- * - Workspace (17): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
- *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, finish_task_session,
- *   execute_worker_run_action, get_approval_requests, request_node_approval, resolve_node_approval, get_node_ops_overview,
- *   execute_task_action
+ * - Workspace (18): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
+ *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, heartbeat_worker_run,
+ *   finish_task_session, execute_worker_run_action, get_approval_requests, request_node_approval, resolve_node_approval,
+ *   get_node_ops_overview, execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -273,6 +273,20 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
     clarifications?: unknown[];
     workerRuns?: unknown[];
     suggestedNextActions?: string[];
+    [key: string]: unknown;
+  }>;
+  heartbeatWorkerRun(inputRunId: string, input?: {
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{
+    id: string;
+    status?: string;
+    percent?: number;
+    currentStep?: string;
+    summary?: string;
+    lastHeartbeatAt?: string;
     [key: string]: unknown;
   }>;
   finishWorkerTaskSession(input: {
@@ -1855,6 +1869,33 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_heartbeat_worker_run",
+    title: "Heartbeat Worker Run",
+    description: "Refresh worker run liveness without changing its overall lifecycle. Use this during long-running host execution to prevent the run from being marked stale.",
+    context: "heartbeat_worker_run",
+    inputSchema: z.object({
+      runId: z.string().min(1).describe("Worker run ID"),
+      percent: z.number().min(0).max(100).optional().describe("Optional progress percentage to attach to the heartbeat"),
+      currentStep: z.string().optional().describe("Optional current step update"),
+      summary: z.string().optional().describe("Optional short status summary"),
+      metadata: jsonRecordSchema.optional().describe("Optional structured metadata to attach to the heartbeat"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const { runId, ...heartbeat } = params;
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const run = await agent.heartbeatWorkerRun(runId, heartbeat);
+      const serialized = runtime.serialize(run);
+      return {
+        content: [{
+          type: "text",
+          text: `Heartbeat recorded. runId=${run.id} status=${run.status ?? "unknown"} percent=${run.percent ?? "n/a"}\n\n${serialized}`,
+        }],
+        structuredContent: { run: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_finish_task_session",
     title: "Finish Task Session",
     description: "Complete a worker execution session by marking the worker run succeeded, failed, or cancelled, and optionally unwatching the task.",
@@ -2147,6 +2188,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_begin_task_session: "workspace",
   agentpact_get_task_execution_brief: "workspace",
   agentpact_update_worker_run: "workspace",
+  agentpact_heartbeat_worker_run: "workspace",
   agentpact_finish_task_session: "workspace",
   agentpact_execute_worker_run_action: "workspace",
   agentpact_get_approval_requests: "workspace",
@@ -2202,6 +2244,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_begin_task_session: "medium",
   agentpact_get_task_execution_brief: "low",
   agentpact_update_worker_run: "medium",
+  agentpact_heartbeat_worker_run: "low",
   agentpact_finish_task_session: "medium",
   agentpact_execute_worker_run_action: "high",
   agentpact_get_approval_requests: "low",
@@ -2225,6 +2268,7 @@ const dailyTools = [
   "agentpact_begin_task_session",
   "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
+  "agentpact_heartbeat_worker_run",
   "agentpact_get_approval_requests",
   "agentpact_get_node_ops_overview",
   "agentpact_get_task_inbox_summary",
@@ -2300,6 +2344,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_get_task_execution_brief",
     "agentpact_create_worker_run",
     "agentpact_update_worker_run",
+    "agentpact_heartbeat_worker_run",
     "agentpact_finish_task_session",
     "agentpact_execute_worker_run_action",
     "agentpact_get_worker_runs",
