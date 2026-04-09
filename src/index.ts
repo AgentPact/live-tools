@@ -17,8 +17,8 @@
  * - Timeout (2): claim_acceptance_timeout, claim_delivery_timeout
  * - Workspace (18): get_task_inbox_summary, get_my_node, ensure_node, update_my_node, execute_node_action,
  *   get_worker_runs, create_worker_run, begin_task_session, get_task_execution_brief, update_worker_run, heartbeat_worker_run,
- *   finish_task_session, execute_worker_run_action, get_approval_requests, request_node_approval, resolve_node_approval,
- *   expire_overdue_approvals, get_node_ops_overview, execute_task_action
+ *   finish_task_session, execute_worker_run_action, resolve_stale_worker_runs, get_approval_requests, request_node_approval,
+ *   resolve_node_approval, expire_overdue_approvals, get_node_ops_overview, execute_task_action
  */
 
 import { AgentPactAgent, type TaskEvent } from "@agentpactai/runtime";
@@ -296,6 +296,16 @@ export type AgentWithWorkerSessions = AgentPactAgent & {
   }): Promise<{
     expiredCount: number;
     approvals: unknown[];
+  }>;
+  resolveStaleWorkerRuns(input: {
+    action: "CANCEL" | "MARK_FAILED";
+    taskId?: string;
+    limit?: number;
+    note?: string;
+  }): Promise<{
+    action: "CANCEL" | "MARK_FAILED";
+    resolvedCount: number;
+    runs: unknown[];
   }>;
   finishWorkerTaskSession(input: {
     runId: string;
@@ -1954,6 +1964,31 @@ const sharedLiveTools: SharedLiveToolDefinition<any>[] = [
   }),
 
   defineTool({
+    name: "agentpact_resolve_stale_worker_runs",
+    title: "Resolve Stale Worker Runs",
+    description: "Batch-resolve stale worker runs for the current Agent Node by explicitly cancelling them or marking them failed. Use this after watchtower identifies stale execution.",
+    context: "resolve_stale_worker_runs",
+    inputSchema: z.object({
+      action: z.enum(["CANCEL", "MARK_FAILED"]).describe("How to resolve stale worker runs"),
+      taskId: z.string().optional().describe("Optional task filter"),
+      limit: z.number().int().min(1).max(100).default(20).describe("Maximum stale runs to inspect"),
+      note: z.string().optional().describe("Optional operator note stored on resolved runs"),
+    }).strict(),
+    execute: async (runtime, params) => {
+      const agent = await runtime.getAgent() as AgentWithWorkerSessions;
+      const result = await agent.resolveStaleWorkerRuns(params);
+      const serialized = runtime.serialize(result);
+      return {
+        content: [{
+          type: "text",
+          text: `Resolved ${result.resolvedCount} stale worker run(s) with action=${result.action}.\n\n${serialized}`,
+        }],
+        structuredContent: { result: JSON.parse(serialized) },
+      };
+    },
+  }),
+
+  defineTool({
     name: "agentpact_get_approval_requests",
     title: "Get Approval Requests",
     description: "List approval requests for the current Agent Node, including pending, approved, rejected, expired, or cancelled items.",
@@ -2223,6 +2258,7 @@ const toolCategoryMap: Record<string, SharedLiveToolCategory> = {
   agentpact_heartbeat_worker_run: "workspace",
   agentpact_finish_task_session: "workspace",
   agentpact_execute_worker_run_action: "workspace",
+  agentpact_resolve_stale_worker_runs: "workspace",
   agentpact_get_approval_requests: "workspace",
   agentpact_request_node_approval: "workspace",
   agentpact_resolve_node_approval: "workspace",
@@ -2280,6 +2316,7 @@ const toolRiskLevelMap: Record<string, SharedLiveToolRiskLevel> = {
   agentpact_heartbeat_worker_run: "low",
   agentpact_finish_task_session: "medium",
   agentpact_execute_worker_run_action: "high",
+  agentpact_resolve_stale_worker_runs: "high",
   agentpact_get_approval_requests: "low",
   agentpact_request_node_approval: "medium",
   agentpact_resolve_node_approval: "high",
@@ -2303,6 +2340,7 @@ const dailyTools = [
   "agentpact_get_task_execution_brief",
   "agentpact_get_worker_runs",
   "agentpact_heartbeat_worker_run",
+  "agentpact_resolve_stale_worker_runs",
   "agentpact_get_approval_requests",
   "agentpact_expire_overdue_approvals",
   "agentpact_get_node_ops_overview",
@@ -2382,6 +2420,7 @@ const commonFlows: Record<string, string[]> = {
     "agentpact_heartbeat_worker_run",
     "agentpact_finish_task_session",
     "agentpact_execute_worker_run_action",
+    "agentpact_resolve_stale_worker_runs",
     "agentpact_get_worker_runs",
   ],
   approvalLoop: [
