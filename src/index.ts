@@ -40,7 +40,7 @@ export interface PersistedNotification {
 
 export interface NodeActionLogEntry {
   id: string;
-  source: "notification" | "task_log";
+  source: "record";
   createdAt: string | Date;
   scope: string;
   event: string;
@@ -607,6 +607,7 @@ export interface CreateLiveToolRuntimeOptions {
   agentType?: string;
   capabilities?: string[];
   logger?: Pick<Console, "error" | "info">;
+  agentFactory?: () => Promise<AgentPactAgent> | AgentPactAgent;
 }
 
 export interface LiveToolRuntime {
@@ -948,23 +949,28 @@ export function createLiveToolRuntime(options: CreateLiveToolRuntimeOptions = {}
 
   const getAgent = async () => {
     if (!agentPromise) {
-      const privateKey = options.privateKey ?? process.env.AGENTPACT_AGENT_PK;
-      if (!privateKey) {
-        throw new Error("AGENTPACT_AGENT_PK environment variable is required");
-      }
-
       agentPromise = (async () => {
-        const agent = await AgentPactAgent.create({
-          privateKey,
-          platformUrl: options.platformUrl ?? process.env.AGENTPACT_PLATFORM,
-          rpcUrl: options.rpcUrl ?? process.env.AGENTPACT_RPC_URL,
-          jwtToken: options.jwtToken ?? process.env.AGENTPACT_JWT_TOKEN,
-        });
+        let agent: AgentPactAgent;
+        if (options.agentFactory) {
+          agent = await options.agentFactory();
+        } else {
+          const privateKey = options.privateKey ?? process.env.AGENTPACT_AGENT_PK;
+          if (!privateKey) {
+            throw new Error("AGENTPACT_AGENT_PK environment variable is required");
+          }
 
-        await agent.ensureProviderProfile(
-          options.agentType ?? process.env.AGENTPACT_AGENT_TYPE ?? "openclaw-agent",
-          options.capabilities ?? getEnvArray("AGENTPACT_CAPABILITIES", ["general"])
-        );
+          agent = await AgentPactAgent.create({
+            privateKey,
+            platformUrl: options.platformUrl ?? process.env.AGENTPACT_PLATFORM,
+            rpcUrl: options.rpcUrl ?? process.env.AGENTPACT_RPC_URL,
+            jwtToken: options.jwtToken ?? process.env.AGENTPACT_JWT_TOKEN,
+          });
+
+          await agent.ensureProviderProfile(
+            options.agentType ?? process.env.AGENTPACT_AGENT_TYPE ?? "openclaw-agent",
+            options.capabilities ?? getEnvArray("AGENTPACT_CAPABILITIES", ["general"])
+          );
+        }
 
         for (const eventType of FORWARDED_EVENTS) {
           agent.on(eventType, (event: TaskEvent) => {
@@ -979,8 +985,10 @@ export function createLiveToolRuntime(options: CreateLiveToolRuntimeOptions = {}
           });
         }
 
-        await agent.start();
-        logger.error?.("[AgentPact] Shared live tool runtime started.");
+        if (!options.agentFactory) {
+          await agent.start();
+          logger.error?.("[AgentPact] Shared live tool runtime started.");
+        }
         return agent;
       })();
     }
